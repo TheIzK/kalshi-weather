@@ -1,0 +1,90 @@
+package com.kalshiweather.ingestion.client.kalshi;
+
+import com.kalshiweather.ingestion.domain.entity.Market;
+import com.kalshiweather.ingestion.domain.enums.MarketStatus;
+import com.kalshiweather.ingestion.domain.enums.StrikeType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+
+import java.time.ZoneId;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Kalshi's markets endpoint is public, no auth required.
+ * https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=X&status=open
+ */
+@Component
+public class KalshiClient {
+
+    private static final Logger log = LoggerFactory.getLogger(KalshiClient.class);
+
+    /**
+     * The {@code status=open} query filter is Kalshi's own vocabulary; the status value
+     * actually returned on each market object is different (verified against live data).
+     */
+    private static final Map<String, MarketStatus> STATUS_BY_WIRE_VALUE = Map.of(
+            "active", MarketStatus.ACTIVE,
+            "closed", MarketStatus.CLOSED,
+            "settled", MarketStatus.RESOLVED
+    );
+
+    // Central Park's KXHIGHNY markets resolve against a US Eastern calendar day.
+    private static final ZoneId MARKET_ZONE = ZoneId.of("America/New_York");
+
+    private final RestClient restClient;
+
+    public KalshiClient(RestClient.Builder restClientBuilder) {
+        this.restClient = restClientBuilder
+                .baseUrl("https://api.elections.kalshi.com/trade-api/v2")
+                .build();
+    }
+
+    /** Fetches all open markets for a series (e.g. "KXHIGHNY") and maps them to entities. */
+    public List<Market> fetchOpenMarkets(String seriesTicker) {
+        KalshiMarketsResponse response = restClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/markets")
+                        .queryParam("series_ticker", seriesTicker)
+                        .queryParam("status", "open")
+                        .build())
+                .retrieve()
+                .body(KalshiMarketsResponse.class);
+
+        if (response == null || response.markets() == null) {
+            return List.of();
+        }
+
+        return response.markets().stream()
+                .map(dto -> toEntity(dto, seriesTicker))
+                .toList();
+    }
+
+    private Market toEntity(KalshiMarketDto dto, String seriesTicker) {
+        Market market = new Market();
+        market.setId(dto.ticker());
+        market.setEventTicker(dto.eventTicker());
+        market.setSeriesTicker(seriesTicker);
+        market.setStrikeType(StrikeType.valueOf(dto.strikeType().toUpperCase()));
+        market.setFloorStrike(dto.floorStrike());
+        market.setCapStrike(dto.capStrike());
+        market.setOccurrenceDate(dto.occurrenceDatetime().atZone(MARKET_ZONE).toLocalDate());
+        market.setStatus(mapStatus(dto.status()));
+        market.setYesBid(dto.yesBidDollars());
+        market.setYesAsk(dto.yesAskDollars());
+        market.setNoBid(dto.noBidDollars());
+        market.setNoAsk(dto.noAskDollars());
+        market.setLiquidityDollars(dto.liquidityDollars());
+        return market;
+    }
+
+    private MarketStatus mapStatus(String wireValue) {
+        MarketStatus mapped = STATUS_BY_WIRE_VALUE.get(wireValue);
+        if (mapped == null) {
+            log.warn("Unrecognized Kalshi market status '{}' — defaulting to CLOSED", wireValue);
+            return MarketStatus.CLOSED;
+        }
+        return mapped;
+    }
+}
