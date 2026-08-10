@@ -1,7 +1,7 @@
 # Kalshi Weather Signal System
 
 Distributed Java/Spring system detecting mispricings between Kalshi weather markets
-and a weather-model-derived probability estimate. See `docs/DESIGN.md` for the full
+and a weather-model-derived probability estimate. See `docs/design-doc-v1.md` for the full
 domain model, data source mappings, and decision log — this file covers conventions
 and current build status only.
 
@@ -11,9 +11,12 @@ and current build status only.
 - Docker Compose locally; k3s later, once services run correctly via Compose
 
 ## Current phase
-Building `ingestion-service` only — a vertical slice pulling Kalshi market data,
-Open-Meteo ensemble forecasts, and NWS forecasts for one subject (NYC / KXHIGHNY),
-storing raw data. Do NOT build pricing-engine, api-service, or signal logic yet.
+`ingestion-service` now covers the full vertical slice for one subject (NYC / KXHIGHNY):
+pulls open Kalshi markets and both weather sources, computes a model probability
+(`SignalProvider` — empirical CDF from the Open-Meteo ensemble, normal-fit fallback at the
+extremes), and persists a `Signal` when the edge clears the configured `SignalConfig`
+threshold. `pricing-engine` and `api-service` as separate services, and the backtesting
+engine, are still not built.
 
 ## Non-negotiable conventions (see docs/DESIGN.md for why)
 - `validFor` / `occurrenceDate` are `LocalDate`, never `Instant` — every source's date

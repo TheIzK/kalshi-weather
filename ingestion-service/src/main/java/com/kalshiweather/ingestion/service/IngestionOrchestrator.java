@@ -9,6 +9,7 @@ import com.kalshiweather.ingestion.domain.entity.SubjectStation;
 import com.kalshiweather.ingestion.repository.EnsembleForecastRepository;
 import com.kalshiweather.ingestion.repository.MarketRepository;
 import com.kalshiweather.ingestion.repository.SubjectStationRepository;
+import com.kalshiweather.ingestion.signal.SignalGenerationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -23,7 +24,8 @@ import java.util.stream.Collectors;
 /**
  * Runs one ingestion cycle per configured {@link SubjectStation}: pull open Kalshi markets,
  * then pull both weather sources for every date that actually has an open market (rather
- * than a fixed lookahead window). Raw storage only — no probability/signal logic here.
+ * than a fixed lookahead window), then evaluate each of that date's markets against the
+ * Open-Meteo ensemble forecast for a possible signal.
  *
  * Each source is isolated so one failing (a flaky API, a transient timeout) doesn't stop
  * the others from still being captured this cycle.
@@ -39,6 +41,7 @@ public class IngestionOrchestrator {
     private final KalshiClient kalshiClient;
     private final OpenMeteoClient openMeteoClient;
     private final NwsClient nwsClient;
+    private final SignalGenerationService signalGenerationService;
 
     public IngestionOrchestrator(
             SubjectStationRepository subjectStationRepository,
@@ -46,7 +49,8 @@ public class IngestionOrchestrator {
             EnsembleForecastRepository ensembleForecastRepository,
             KalshiClient kalshiClient,
             OpenMeteoClient openMeteoClient,
-            NwsClient nwsClient
+            NwsClient nwsClient,
+            SignalGenerationService signalGenerationService
     ) {
         this.subjectStationRepository = subjectStationRepository;
         this.marketRepository = marketRepository;
@@ -54,6 +58,7 @@ public class IngestionOrchestrator {
         this.kalshiClient = kalshiClient;
         this.openMeteoClient = openMeteoClient;
         this.nwsClient = nwsClient;
+        this.signalGenerationService = signalGenerationService;
     }
 
     @Scheduled(
@@ -73,35 +78,47 @@ public class IngestionOrchestrator {
     }
 
     private void ingestStation(SubjectStation station) {
-        Set<LocalDate> occurrenceDates = ingestMarkets(station);
+        List<Market> markets = ingestMarkets(station);
+
+        Set<LocalDate> occurrenceDates = markets.stream()
+                .map(Market::getOccurrenceDate)
+                .collect(Collectors.toCollection(TreeSet::new));
+
         for (LocalDate date : occurrenceDates) {
-            ingestOpenMeteo(station, date);
-            ingestNws(station, date);
+            EnsembleForecast openMeteoForecast = ingestOpenMeteo(station, date);
+            ingestNws(station, date); // raw storage / cross-source comparison, not yet fed into the model
+
+            if (openMeteoForecast == null) {
+                continue; // no forecast to evaluate markets against this cycle
+            }
+            markets.stream()
+                    .filter(m -> m.getOccurrenceDate().equals(date))
+                    .forEach(market -> signalGenerationService.evaluate(market, openMeteoForecast));
         }
     }
 
-    private Set<LocalDate> ingestMarkets(SubjectStation station) {
+    private List<Market> ingestMarkets(SubjectStation station) {
         try {
             List<Market> markets = kalshiClient.fetchOpenMarkets(station.getSeriesTicker());
-            marketRepository.saveAll(markets);
-            log.info("Ingested {} open market(s) for {}", markets.size(), station.getSeriesTicker());
-            return markets.stream()
-                    .map(Market::getOccurrenceDate)
-                    .collect(Collectors.toCollection(TreeSet::new));
+            List<Market> saved = marketRepository.saveAll(markets);
+            log.info("Ingested {} open market(s) for {}", saved.size(), station.getSeriesTicker());
+            return saved;
         } catch (Exception e) {
             log.error("Kalshi ingestion failed for {}: {}", station.getSeriesTicker(), e.getMessage(), e);
-            return Set.of();
+            return List.of();
         }
     }
 
-    private void ingestOpenMeteo(SubjectStation station, LocalDate date) {
+    private EnsembleForecast ingestOpenMeteo(SubjectStation station, LocalDate date) {
         try {
             EnsembleForecast forecast = openMeteoClient.fetchDailyHighTemp(
                     station.getSubjectKey(), station.getLatitude(), station.getLongitude(), date);
-            ensembleForecastRepository.save(forecast);
+            EnsembleForecast saved = ensembleForecastRepository.save(forecast);
             log.info("Ingested Open-Meteo forecast for {} on {}", station.getSubjectKey(), date);
+            return saved;
         } catch (Exception e) {
             log.error("Open-Meteo ingestion failed for {} on {}: {}", station.getSubjectKey(), date, e.getMessage(), e);
+            return null;
         }
     }
 
