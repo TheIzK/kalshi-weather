@@ -17,3 +17,8 @@ spring:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: false
+
+ingestion:
+  schedule:
+    initial-delay-ms: 5000
+    fixed-delay-ms: 900000 # 15 minutes
