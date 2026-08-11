@@ -64,7 +64,7 @@ class SignalGenerationServiceTest {
         market.setYesAsk(new BigDecimal("0.60"));
         market.setNoBid(new BigDecimal("0.40"));
         market.setNoAsk(new BigDecimal("0.45"));
-        market.setLiquidityDollars(new BigDecimal("100.00"));
+        market.setOpenInterest(new BigDecimal("500"));
         return market;
     }
 
@@ -137,11 +137,24 @@ class SignalGenerationServiceTest {
     }
 
     @Test
-    void skipsMarketsWithNoLiquidity() {
-        Market illiquid = marketWithSpread();
-        illiquid.setLiquidityDollars(BigDecimal.ZERO);
+    void skipsMarketsWithNoOpenInterest() {
+        Market noPositions = marketWithSpread();
+        noPositions.setOpenInterest(BigDecimal.ZERO);
 
-        Optional<Signal> result = service.evaluate(illiquid, forecast);
+        Optional<Signal> result = service.evaluate(noPositions, forecast);
+
+        assertThat(result).isEmpty();
+        verifyNoInteractions(signalProvider);
+        verify(signalRepository, never()).save(any());
+    }
+
+    @Test
+    void skipsMarketsWithSpreadTooWide() {
+        Market wideSpread = marketWithSpread();
+        wideSpread.setYesBid(new BigDecimal("0.30"));
+        wideSpread.setYesAsk(new BigDecimal("0.60")); // 30-cent spread, well past the 10-cent trust limit
+
+        Optional<Signal> result = service.evaluate(wideSpread, forecast);
 
         assertThat(result).isEmpty();
         verifyNoInteractions(signalProvider);

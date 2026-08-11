@@ -24,6 +24,8 @@ public record KalshiMarketDto(
         @JsonProperty("yes_ask_dollars") BigDecimal yesAskDollars,
         @JsonProperty("no_bid_dollars") BigDecimal noBidDollars,
         @JsonProperty("no_ask_dollars") BigDecimal noAskDollars,
-        @JsonProperty("liquidity_dollars") BigDecimal liquidityDollars
+        @JsonProperty("liquidity_dollars") BigDecimal liquidityDollars,
+        @JsonProperty("volume_24h_fp") BigDecimal volume24h,
+        @JsonProperty("open_interest_fp") BigDecimal openInterest
 ) {
 }

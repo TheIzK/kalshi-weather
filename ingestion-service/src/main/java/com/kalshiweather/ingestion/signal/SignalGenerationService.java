@@ -20,8 +20,13 @@ import java.util.Optional;
 /**
  * Turns a model probability into a persisted {@link Signal}, if the edge clears the
  * configured threshold. Market-implied probability is the mid of yes bid/ask (a real
- * fillable price), gated on liquidity — never {@code last_price}, per the design doc:
- * several real markets had last_price far from a fillable quote on thin books.
+ * fillable price), never {@code last_price}, per the design doc: several real markets had
+ * last_price far from a fillable quote on thin books.
+ *
+ * Fillability is gated on real activity (open interest) and spread width, not Kalshi's
+ * {@code liquidity_dollars} field — verified against live data on 2026-08-11 that field
+ * reads exactly 0.0000 on every KXHIGHNY market regardless of actual trading activity
+ * (markets with $11k+ 24h volume and 1-cent spreads still report it as zero).
  */
 @Service
 public class SignalGenerationService {
@@ -31,6 +36,9 @@ public class SignalGenerationService {
     /** Kalshi taker fee: round_up(0.07 * C * P * (1-P)). As a percent of stake this cancels
      * to 7% * (1 - P) per contract, independent of contract count C. */
     private static final BigDecimal FEE_RATE_PERCENT = BigDecimal.valueOf(7);
+
+    /** A starting heuristic, not empirically tuned: wider than this and a quote isn't trusted. */
+    private static final BigDecimal MAX_TRUSTED_SPREAD = new BigDecimal("0.10");
 
     private static final int PROBABILITY_SCALE = 5; // matches NUMERIC(6,5)
     private static final int PERCENT_SCALE = 3;      // matches NUMERIC(6,3)
@@ -51,8 +59,9 @@ public class SignalGenerationService {
 
     /** Evaluates one market against one ensemble forecast and persists a Signal if it qualifies. */
     public Optional<Signal> evaluate(Market market, EnsembleForecast forecast) {
-        if (market.getLiquidityDollars().compareTo(BigDecimal.ZERO) <= 0) {
-            log.debug("Skipping {}: no liquidity, no fillable price to trust", market.getId());
+        if (!hasFillableQuote(market)) {
+            log.debug("Skipping {}: no open interest or spread too wide, no fillable price to trust",
+                    market.getId());
             return Optional.empty();
         }
 
@@ -136,5 +145,13 @@ public class SignalGenerationService {
 
     private BigDecimal midpoint(BigDecimal a, BigDecimal b) {
         return a.add(b).divide(BigDecimal.valueOf(2), PROBABILITY_SCALE, RoundingMode.HALF_UP);
+    }
+
+    /** Real open interest (someone actually holds a position) plus a spread tight enough to trust. */
+    private boolean hasFillableQuote(Market market) {
+        boolean hasOpenInterest = market.getOpenInterest() != null
+                && market.getOpenInterest().compareTo(BigDecimal.ZERO) > 0;
+        BigDecimal spread = market.getYesAsk().subtract(market.getYesBid());
+        return hasOpenInterest && spread.compareTo(MAX_TRUSTED_SPREAD) <= 0;
     }
 }

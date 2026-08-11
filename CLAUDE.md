@@ -18,15 +18,16 @@ extremes), and persists a `Signal` when the edge clears the configured `SignalCo
 threshold. `pricing-engine` and `api-service` as separate services, and the backtesting
 engine, are still not built.
 
-## Non-negotiable conventions (see docs/DESIGN.md for why)
+## Non-negotiable conventions (see docs/design-doc-v1.md for why)
 - `validFor` / `occurrenceDate` are `LocalDate`, never `Instant` — every source's date
   gets normalized to a calendar day at ingestion time before anything joins on it.
 - Open-Meteo returns Celsius; convert to Fahrenheit once, explicitly, at ingestion.
 - NWS forecast periods mix day/night — always filter to `isDaytime: true` for the
   target date, never take "the next period in the array."
 - NWS requests need a proper `User-Agent` header per their API guidance.
-- Market pricing uses bid/ask mid, gated on `liquidityDollars > 0` — never `last_price`
-  alone.
+- Market pricing uses bid/ask mid, never `last_price` alone. Fillability is gated on
+  `openInterest > 0` and a spread under 10 cents — NOT `liquidityDollars`, which reads
+  0.0000 on every KXHIGHNY market regardless of real activity (verified 2026-08-11).
 
 ## Commands
 - Build: `mvn clean install`

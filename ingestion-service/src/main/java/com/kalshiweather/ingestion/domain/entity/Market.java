@@ -58,6 +58,14 @@ public class Market {
     @Column(name = "liquidity_dollars", precision = 14, scale = 4, nullable = false)
     private BigDecimal liquidityDollars;
 
+    /** Kalshi's volume_24h_fp — unlike liquidityDollars, this is actually populated. */
+    @Column(name = "volume_24h", precision = 14, scale = 4, nullable = false)
+    private BigDecimal volume24h;
+
+    /** Kalshi's open_interest_fp — used as the real fillability signal for signal generation. */
+    @Column(name = "open_interest", precision = 14, scale = 4, nullable = false)
+    private BigDecimal openInterest;
+
     public String getId() {
         return id;
     }
@@ -160,5 +168,21 @@ public class Market {
 
     public void setLiquidityDollars(BigDecimal liquidityDollars) {
         this.liquidityDollars = liquidityDollars;
+    }
+
+    public BigDecimal getVolume24h() {
+        return volume24h;
+    }
+
+    public void setVolume24h(BigDecimal volume24h) {
+        this.volume24h = volume24h;
+    }
+
+    public BigDecimal getOpenInterest() {
+        return openInterest;
+    }
+
+    public void setOpenInterest(BigDecimal openInterest) {
+        this.openInterest = openInterest;
     }
 }
