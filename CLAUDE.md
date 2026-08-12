@@ -6,7 +6,6 @@ domain model, data source mappings, and decision log — this file covers conven
 and current build status only.
 
 ## Stack
-- Java 21, Spring Boot 3.x, Maven
 - Postgres, Redis (Streams)
 - Docker Compose locally; k3s later, once services run correctly via Compose
 
@@ -28,11 +27,6 @@ engine, are still not built.
 - Market pricing uses bid/ask mid, never `last_price` alone. Fillability is gated on
   `openInterest > 0` and a spread under 10 cents — NOT `liquidityDollars`, which reads
   0.0000 on every KXHIGHNY market regardless of real activity (verified 2026-08-11).
-
-## Commands
-- Build: `mvn clean install`
-- Test: `mvn test`
-- Local stack: `docker compose up -d`
 
 ## Compact instructions
 When compacting, preserve the domain model field names and the "current phase" section —

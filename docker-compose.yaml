@@ -6,14 +6,29 @@ services:
       POSTGRES_USER: kalshi
       POSTGRES_PASSWORD: localdev
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kalshi -d kalshi_signals"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+
+  ingestion:
+    build: ./ingestion-service
+    container_name: kalshi-ingestion
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/kalshi_signals
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:
