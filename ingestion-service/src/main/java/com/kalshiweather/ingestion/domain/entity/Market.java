@@ -1,5 +1,6 @@
 package com.kalshiweather.ingestion.domain.entity;
 
+import com.kalshiweather.ingestion.domain.enums.MarketResult;
 import com.kalshiweather.ingestion.domain.enums.MarketStatus;
 import com.kalshiweather.ingestion.domain.enums.StrikeType;
 import jakarta.persistence.Column;
@@ -42,6 +43,10 @@ public class Market {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 20, nullable = false)
     private MarketStatus status;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "result", length = 10)
+    private MarketResult result;
 
     @Column(name = "yes_bid", precision = 6, scale = 4, nullable = false)
     private BigDecimal yesBid;
@@ -128,6 +133,14 @@ public class Market {
 
     public void setStatus(MarketStatus status) {
         this.status = status;
+    }
+
+    public MarketResult getResult() {
+        return result;
+    }
+
+    public void setResult(MarketResult result) {
+        this.result = result;
     }
 
     public BigDecimal getYesBid() {

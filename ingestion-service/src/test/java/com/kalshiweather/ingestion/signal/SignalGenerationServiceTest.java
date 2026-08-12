@@ -52,6 +52,7 @@ class SignalGenerationServiceTest {
         forecast.setMemberValuesF(new BigDecimal[100]); // only .length is used outside CONFIDENCE_ADJUSTED math
 
         lenient().when(signalRepository.save(any(Signal.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(signalRepository.existsByMarketIdAndStatusIn(any(), any())).thenReturn(false);
     }
 
     /** yesBid=0.55, yesAsk=0.60 -> implied 0.575; model=0.65 -> edge=7.5%, fee=7%*(1-0.60)=2.8%, net=4.7%. */
@@ -159,6 +160,31 @@ class SignalGenerationServiceTest {
         assertThat(result).isEmpty();
         verifyNoInteractions(signalProvider);
         verify(signalRepository, never()).save(any());
+    }
+
+    @Test
+    void skipsWhenMarketAlreadyHasActiveOrActedOnSignal() {
+        when(signalRepository.existsByMarketIdAndStatusIn(any(), any())).thenReturn(true);
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isEmpty();
+        verifyNoInteractions(signalProvider);
+        verify(signalRepository, never()).save(any());
+    }
+
+    @Test
+    void stillCreatesSignalWhenExistingSignalsAreOnlyExpired() {
+        // the dedup check only queries ACTIVE/ACTED_ON, so an EXPIRED-only market isn't blocked
+        when(signalRepository.existsByMarketIdAndStatusIn(any(), any())).thenReturn(false);
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FEE_ADJUSTED, null, new BigDecimal("3.000"), null)));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isPresent();
+        verify(signalRepository).save(any(Signal.class));
     }
 
     @Test

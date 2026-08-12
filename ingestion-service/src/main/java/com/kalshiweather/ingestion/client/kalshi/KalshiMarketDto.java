@@ -20,6 +20,7 @@ public record KalshiMarketDto(
         @JsonProperty("cap_strike") BigDecimal capStrike,
         @JsonProperty("occurrence_datetime") Instant occurrenceDatetime,
         @JsonProperty("status") String status,
+        @JsonProperty("result") String result,
         @JsonProperty("yes_bid_dollars") BigDecimal yesBidDollars,
         @JsonProperty("yes_ask_dollars") BigDecimal yesAskDollars,
         @JsonProperty("no_bid_dollars") BigDecimal noBidDollars,

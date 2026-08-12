@@ -1,6 +1,7 @@
 package com.kalshiweather.ingestion.client.kalshi;
 
 import com.kalshiweather.ingestion.domain.entity.Market;
+import com.kalshiweather.ingestion.domain.enums.MarketResult;
 import com.kalshiweather.ingestion.domain.enums.MarketStatus;
 import com.kalshiweather.ingestion.domain.enums.StrikeType;
 import org.slf4j.Logger;
@@ -29,6 +30,12 @@ public class KalshiClient {
             "active", MarketStatus.ACTIVE,
             "closed", MarketStatus.CLOSED,
             "settled", MarketStatus.RESOLVED
+    );
+
+    /** Blank is the normal case (not yet settled) — only a non-blank, unrecognized value warns. */
+    private static final Map<String, MarketResult> RESULT_BY_WIRE_VALUE = Map.of(
+            "yes", MarketResult.YES,
+            "no", MarketResult.NO
     );
 
     // Central Park's KXHIGHNY markets resolve against a US Eastern calendar day.
@@ -61,6 +68,25 @@ public class KalshiClient {
                 .toList();
     }
 
+    /**
+     * Fetches one market by ticker — used to check whether a market a paper trade is open
+     * against has settled yet. {@code seriesTicker} isn't on the wire (same reason
+     * {@link #fetchOpenMarkets} needs it as a parameter); the caller already has it from the
+     * stored {@link Market} row being reconciled.
+     */
+    public Market fetchMarket(String ticker, String seriesTicker) {
+        KalshiMarketResponse response = restClient.get()
+                .uri("/markets/{ticker}", ticker)
+                .retrieve()
+                .body(KalshiMarketResponse.class);
+
+        if (response == null || response.market() == null) {
+            throw new IllegalStateException("Kalshi returned no market for ticker " + ticker);
+        }
+
+        return toEntity(response.market(), seriesTicker);
+    }
+
     private Market toEntity(KalshiMarketDto dto, String seriesTicker) {
         Market market = new Market();
         market.setId(dto.ticker());
@@ -71,6 +97,7 @@ public class KalshiClient {
         market.setCapStrike(dto.capStrike());
         market.setOccurrenceDate(dto.occurrenceDatetime().atZone(MARKET_ZONE).toLocalDate());
         market.setStatus(mapStatus(dto.status()));
+        market.setResult(mapResult(dto.result()));
         market.setYesBid(dto.yesBidDollars());
         market.setYesAsk(dto.yesAskDollars());
         market.setNoBid(dto.noBidDollars());
@@ -86,6 +113,17 @@ public class KalshiClient {
         if (mapped == null) {
             log.warn("Unrecognized Kalshi market status '{}' — defaulting to CLOSED", wireValue);
             return MarketStatus.CLOSED;
+        }
+        return mapped;
+    }
+
+    private MarketResult mapResult(String wireValue) {
+        if (wireValue == null || wireValue.isBlank()) {
+            return null; // not yet settled — the normal case for every open market
+        }
+        MarketResult mapped = RESULT_BY_WIRE_VALUE.get(wireValue);
+        if (mapped == null) {
+            log.warn("Unrecognized Kalshi market result '{}'", wireValue);
         }
         return mapped;
     }

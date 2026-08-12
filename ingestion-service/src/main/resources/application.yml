@@ -22,3 +22,4 @@ ingestion:
   schedule:
     initial-delay-ms: 5000
     fixed-delay-ms: 900000 # 15 minutes
+    settlement-check-delay-ms: 3600000 # 1 hour — settlement doesn't need 15-min granularity

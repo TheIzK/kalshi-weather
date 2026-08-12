@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -43,6 +44,9 @@ public class SignalGenerationService {
     private static final int PROBABILITY_SCALE = 5; // matches NUMERIC(6,5)
     private static final int PERCENT_SCALE = 3;      // matches NUMERIC(6,3)
 
+    /** A market already tracked by one of these doesn't get a duplicate signal every cycle. */
+    private static final List<SignalStatus> OPEN_SIGNAL_STATUSES = List.of(SignalStatus.ACTIVE, SignalStatus.ACTED_ON);
+
     private final SignalProvider signalProvider;
     private final SignalConfigRepository signalConfigRepository;
     private final SignalRepository signalRepository;
@@ -59,6 +63,11 @@ public class SignalGenerationService {
 
     /** Evaluates one market against one ensemble forecast and persists a Signal if it qualifies. */
     public Optional<Signal> evaluate(Market market, EnsembleForecast forecast) {
+        if (signalRepository.existsByMarketIdAndStatusIn(market.getId(), OPEN_SIGNAL_STATUSES)) {
+            log.debug("Skipping {}: already has an active or acted-on signal", market.getId());
+            return Optional.empty();
+        }
+
         if (!hasFillableQuote(market)) {
             log.debug("Skipping {}: no open interest or spread too wide, no fillable price to trust",
                     market.getId());

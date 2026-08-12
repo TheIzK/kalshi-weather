@@ -50,6 +50,26 @@ class LiveApiSmokeTest {
         assertThat(first.getOccurrenceDate()).isNotNull();
     }
 
+    /**
+     * Verifies the single-market endpoint (GET /markets/{ticker}) and response envelope shape
+     * assumed by {@link KalshiClient#fetchMarket} — used by settlement reconciliation. Can only
+     * be checked against a currently-open market here (no stable settled-ticker to hardcode), so
+     * this doesn't confirm the "yes"/"no" result wire values themselves — that gets a first real
+     * confirmation once a live paper trade actually settles; a wrong assumption there would show
+     * up as a logged, non-fatal error in SettlementReconciliationService, not silent corruption.
+     */
+    @Test
+    void kalshiClient_fetchesSingleMarketByTicker() {
+        Market open = kalshiClient.fetchOpenMarkets("KXHIGHNY").get(0);
+
+        Market fetched = kalshiClient.fetchMarket(open.getId(), "KXHIGHNY");
+
+        assertThat(fetched.getId()).isEqualTo(open.getId());
+        assertThat(fetched.getYesBid()).isNotNull();
+        assertThat(fetched.getYesAsk()).isNotNull();
+        assertThat(fetched.getResult()).isNull(); // not yet settled
+    }
+
     @Test
     void openMeteoClient_fetchesEnsembleForecastForTomorrow() {
         LocalDate tomorrow = LocalDate.now().plusDays(1);

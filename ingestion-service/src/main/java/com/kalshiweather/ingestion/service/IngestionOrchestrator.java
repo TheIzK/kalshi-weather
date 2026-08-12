@@ -10,6 +10,7 @@ import com.kalshiweather.ingestion.repository.EnsembleForecastRepository;
 import com.kalshiweather.ingestion.repository.MarketRepository;
 import com.kalshiweather.ingestion.repository.SubjectStationRepository;
 import com.kalshiweather.ingestion.signal.SignalGenerationService;
+import com.kalshiweather.ingestion.trade.PaperTradeService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -42,6 +43,7 @@ public class IngestionOrchestrator {
     private final OpenMeteoClient openMeteoClient;
     private final NwsClient nwsClient;
     private final SignalGenerationService signalGenerationService;
+    private final PaperTradeService paperTradeService;
 
     public IngestionOrchestrator(
             SubjectStationRepository subjectStationRepository,
@@ -50,7 +52,8 @@ public class IngestionOrchestrator {
             KalshiClient kalshiClient,
             OpenMeteoClient openMeteoClient,
             NwsClient nwsClient,
-            SignalGenerationService signalGenerationService
+            SignalGenerationService signalGenerationService,
+            PaperTradeService paperTradeService
     ) {
         this.subjectStationRepository = subjectStationRepository;
         this.marketRepository = marketRepository;
@@ -59,6 +62,7 @@ public class IngestionOrchestrator {
         this.openMeteoClient = openMeteoClient;
         this.nwsClient = nwsClient;
         this.signalGenerationService = signalGenerationService;
+        this.paperTradeService = paperTradeService;
     }
 
     @Scheduled(
@@ -93,7 +97,8 @@ public class IngestionOrchestrator {
             }
             markets.stream()
                     .filter(m -> m.getOccurrenceDate().equals(date))
-                    .forEach(market -> signalGenerationService.evaluate(market, openMeteoForecast));
+                    .forEach(market -> signalGenerationService.evaluate(market, openMeteoForecast)
+                            .ifPresent(signal -> paperTradeService.open(signal, market)));
         }
     }
 
