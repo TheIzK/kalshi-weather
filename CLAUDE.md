@@ -2,8 +2,9 @@
 
 Distributed Java/Spring system detecting mispricings between Kalshi weather markets
 and a weather-model-derived probability estimate. See `docs/design-doc-v1.md` for the full
-domain model, data source mappings, and decision log — this file covers conventions
-and current build status only.
+domain model, data source mappings, and decision log, and `docs/operations.md` for deployment,
+local dev commands, and infra decisions — this file covers conventions and current build
+status only.
 
 ## Stack
 - Postgres, Redis (Streams)
@@ -13,9 +14,11 @@ and current build status only.
 `ingestion-service` now covers the full vertical slice for one subject (NYC / KXHIGHNY):
 pulls open Kalshi markets and both weather sources, computes a model probability
 (`SignalProvider` — empirical CDF from the Open-Meteo ensemble, normal-fit fallback at the
-extremes), and persists a `Signal` when the edge clears the configured `SignalConfig`
-threshold. `pricing-engine` and `api-service` as separate services, and the backtesting
-engine, are still not built.
+extremes), persists a deduped `Signal` when the edge clears the configured `SignalConfig`
+threshold (one `ACTIVE`/`ACTED_ON` signal per market at a time), opens a `PaperTrade` against
+it immediately, and reconciles it against Kalshi's real settlement on an hourly schedule.
+Running continuously on a DigitalOcean droplet — see `docs/operations.md`. `pricing-engine`
+and `api-service` as separate services, and the backtesting engine, are still not built.
 
 ## Non-negotiable conventions (see docs/design-doc-v1.md for why)
 - `validFor` / `occurrenceDate` are `LocalDate`, never `Instant` — every source's date
