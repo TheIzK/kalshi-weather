@@ -23,6 +23,9 @@ services:
   ingestion:
     build: ./ingestion-service
     container_name: kalshi-ingestion
+    ports:
+      - "8080:8080" # deliberately not loopback-only — /internal/status is meant to be reachable
+                     # externally, gated by STATUS_API_TOKEN instead of network isolation
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/kalshi_signals
       STATUS_API_TOKEN: ${STATUS_API_TOKEN:-}
