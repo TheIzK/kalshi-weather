@@ -96,6 +96,26 @@ ssh root@159.203.139.141 "docker exec kalshi-weather-postgres-1 psql -U kalshi -
   `SignalConfig` or the design doc; inventing one wasn't warranted just to open a trade. See
   Future Considerations below.
 - **Local vs. droplet split**: see "Current state" above.
+- **Multi-domain signals (MLB, and later NFL/CFB)**: extend the existing `Signal`/
+  `PaperTrade` pipeline rather than run a parallel tracking system per sport — `Market.id`,
+  `SignalDirection`, `PaperTradeService`, and `SettlementReconciliationService` were already
+  domain-agnostic. `SignalGenerationService.evaluate(Market, BigDecimal modelProbability,
+  String sourceType, String sourceReferenceId)` is the generic entry point: pass your
+  computed probability and a `sourceType` label (e.g. `MLB_WIN_PROBABILITY`) plus a
+  `sourceReferenceId` pointing at wherever you persisted your own model's audit trail —
+  everything downstream (dedup, fee/edge math, paper trading, settlement) just works. Weather
+  keeps using the original `evaluate(Market, EnsembleForecast)` overload and the `forecast_id`
+  FK; don't migrate it, both are fine to coexist indefinitely.
+- **MLB cadence**: 7am America/New_York daily (`mlb.schedule.daily-refresh-cron`) does the
+  full refresh — schedule, probable pitchers, season stats, team standings. Hourly
+  (`mlb.schedule.hourly-recheck-delay-ms`) just re-checks the schedule for pitcher scratches
+  (they move win probability more than almost anything else) and re-evaluates today's games.
+  Standings/stats are intentionally not re-fetched hourly — they don't shift within a day.
+- **MLB market matching**: Kalshi models one game as two separate per-team binary markets
+  sharing an `event_ticker` (verified against live data 2026-08-16), not a single moneyline
+  market — e.g. `KXMLBGAME-26AUG191420CWSCHC-CWS` / `-CHC`. Matched by team abbreviation
+  (the ticker suffix after the last hyphen) + occurrence date, not by parsing the rest of the
+  ticker format, which is an implementation detail of Kalshi's that could change.
 
 ## Future considerations (not built, intentionally deferred)
 
