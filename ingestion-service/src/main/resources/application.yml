@@ -23,3 +23,9 @@ ingestion:
     initial-delay-ms: 5000
     fixed-delay-ms: 900000 # 15 minutes
     settlement-check-delay-ms: 3600000 # 1 hour — settlement doesn't need 15-min granularity
+
+mlb:
+  schedule:
+    daily-refresh-cron: "0 0 7 * * *" # 7am America/New_York — schedule, pitchers, stats, standings
+    initial-delay-ms: 10000
+    hourly-recheck-delay-ms: 3600000 # re-checks for pitcher scratches, then re-evaluates signals

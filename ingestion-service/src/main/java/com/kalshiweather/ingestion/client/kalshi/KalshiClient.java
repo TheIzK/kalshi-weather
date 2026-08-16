@@ -98,7 +98,7 @@ public class KalshiClient {
         market.setId(dto.ticker());
         market.setEventTicker(dto.eventTicker());
         market.setSeriesTicker(seriesTicker);
-        market.setStrikeType(StrikeType.valueOf(dto.strikeType().toUpperCase()));
+        market.setStrikeType(mapStrikeType(dto.strikeType()));
         market.setFloorStrike(dto.floorStrike());
         market.setCapStrike(dto.capStrike());
         market.setOccurrenceDate(dto.occurrenceDatetime().atZone(MARKET_ZONE).toLocalDate());
@@ -121,6 +121,22 @@ public class KalshiClient {
             return MarketStatus.CLOSED;
         }
         return mapped;
+    }
+
+    /**
+     * Only weather markets have a threshold shape ({@code GREATER}/{@code LESS}/
+     * {@code BETWEEN}); non-weather series (e.g. MLB's per-team moneyline markets, wire
+     * value "structured") have no equivalent, so this is null for them rather than an
+     * exception — unlike {@link #mapStatus}/{@link #mapResult}, no warn log here, since an
+     * unrecognized value here is the expected, constant case for every non-weather market,
+     * not a rare anomaly worth flagging.
+     */
+    private StrikeType mapStrikeType(String wireValue) {
+        try {
+            return StrikeType.valueOf(wireValue.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private MarketResult mapResult(String wireValue) {

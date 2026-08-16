@@ -197,6 +197,44 @@ class SignalGenerationServiceTest {
         verifyNoInteractions(signalProvider);
     }
 
+    /** Generic (non-EnsembleForecast) overload — same math, different provenance/persistence path. */
+    @Test
+    void genericOverload_setsSourceProvenanceInsteadOfForecastId() {
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FEE_ADJUSTED, null, new BigDecimal("3.000"), null)));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), new BigDecimal("0.65"), "MLB_WIN_PROBABILITY", "snapshot-123");
+
+        assertThat(result).isPresent();
+        Signal signal = result.get();
+        assertThat(signal.getSourceType()).isEqualTo("MLB_WIN_PROBABILITY");
+        assertThat(signal.getSourceReferenceId()).isEqualTo("snapshot-123");
+        assertThat(signal.getForecastId()).isNull();
+        assertThat(signal.getEdgePercent()).isEqualByComparingTo("7.500");
+        verify(signalRepository).save(any(Signal.class));
+    }
+
+    @Test
+    void genericOverload_deduplicatesAndSkipsBeforeAnyComputation() {
+        when(signalRepository.existsByMarketIdAndStatusIn(any(), any())).thenReturn(true);
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), new BigDecimal("0.65"), "MLB_WIN_PROBABILITY", "snapshot-123");
+
+        assertThat(result).isEmpty();
+        verify(signalRepository, never()).save(any());
+    }
+
+    @Test
+    void genericOverload_confidenceAdjustedNeverQualifiesWithNoEnsemble() {
+        // no ensemble member count for a non-weather source -> zScore is always 0, can't clear a positive threshold
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.CONFIDENCE_ADJUSTED, null, null, new BigDecimal("0.1"))));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), new BigDecimal("0.65"), "MLB_WIN_PROBABILITY", "snapshot-123");
+
+        assertThat(result).isEmpty();
+    }
+
     private SignalConfig config(ThresholdMode mode, BigDecimal flat, BigDecimal netEdge, BigDecimal zScore) {
         SignalConfig config = new SignalConfig();
         config.setId(UUID.randomUUID());

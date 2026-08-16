@@ -83,6 +83,24 @@ class LiveApiSmokeTest {
         assertThat(fetched.getResult()).isEqualTo(MarketResult.YES);
     }
 
+    /**
+     * Regression test for a bug found while building the MLB module (2026-08-16): MLB's
+     * KXMLBGAME markets have wire strike_type "structured", which isn't in our StrikeType
+     * enum — before the fix, StrikeType.valueOf(...) threw for every MLB market, so
+     * fetchOpenMarkets("KXMLBGAME") failed outright. This pins the tolerant-mapping fix
+     * (null strikeType, not an exception) against the real API.
+     */
+    @Test
+    void kalshiClient_toleratesNonWeatherStrikeTypeOnMlbMarkets() {
+        List<Market> markets = kalshiClient.fetchOpenMarkets("KXMLBGAME");
+
+        assertThat(markets).isNotEmpty();
+        Market first = markets.get(0);
+        assertThat(first.getStrikeType()).isNull();
+        assertThat(first.getYesBid()).isNotNull();
+        assertThat(first.getYesAsk()).isNotNull();
+    }
+
     @Test
     void openMeteoClient_fetchesEnsembleForecastForTomorrow() {
         LocalDate tomorrow = LocalDate.now().plusDays(1);

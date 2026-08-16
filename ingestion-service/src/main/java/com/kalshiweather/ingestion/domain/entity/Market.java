@@ -28,7 +28,7 @@ public class Market {
     private String seriesTicker;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "strike_type", length = 20, nullable = false)
+    @Column(name = "strike_type", length = 20)
     private StrikeType strikeType;
 
     @Column(name = "floor_strike", precision = 6, scale = 2)

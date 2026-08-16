@@ -28,6 +28,11 @@ import java.util.Optional;
  * {@code liquidity_dollars} field — verified against live data on 2026-08-11 that field
  * reads exactly 0.0000 on every KXHIGHNY market regardless of actual trading activity
  * (markets with $11k+ 24h volume and 1-cent spreads still report it as zero).
+ *
+ * Domain-agnostic by design: the core evaluation only needs a model probability, not an
+ * {@link EnsembleForecast} — the weather-specific overload below computes one via
+ * {@link SignalProvider} and delegates, so other sources (MLB, future NFL/CFB) can call
+ * the generic overload directly with their own model's probability.
  */
 @Service
 public class SignalGenerationService {
@@ -61,8 +66,55 @@ public class SignalGenerationService {
         this.signalRepository = signalRepository;
     }
 
-    /** Evaluates one market against one ensemble forecast and persists a Signal if it qualifies. */
+    /**
+     * Weather entry point. The dedup/fillable-quote/config pre-checks run first and can
+     * short-circuit before the model probability is ever computed — computeProbability
+     * isn't free, and several tests pin exactly this ordering (verifyNoInteractions on
+     * SignalProvider for markets that should skip before reaching the model at all).
+     */
     public Optional<Signal> evaluate(Market market, EnsembleForecast forecast) {
+        Optional<SignalConfig> config = preCheck(market);
+        if (config.isEmpty()) {
+            return Optional.empty();
+        }
+
+        BigDecimal modelProbability = signalProvider.computeProbability(market, forecast);
+        int ensembleMemberCount = forecast.getMemberValuesF() != null ? forecast.getMemberValuesF().length : 0;
+
+        return buildSignal(market, modelProbability, ensembleMemberCount, config.get()).map(signal -> {
+            signal.setForecastId(forecast.getId());
+            Signal saved = signalRepository.save(signal);
+            logSignal(saved);
+            return saved;
+        });
+    }
+
+    /**
+     * Generic entry point for any non-weather source (MLB, future NFL/CFB) that already has
+     * a model probability computed. {@code sourceType}/{@code sourceReferenceId} are a
+     * lightweight, generic provenance pair — e.g. ("MLB_WIN_PROBABILITY", the
+     * mlb_win_probability_snapshots id) — instead of a dedicated nullable FK per domain.
+     * No ensemble member count applies here, so CONFIDENCE_ADJUSTED threshold mode never
+     * qualifies for these sources — that's expected, not a bug: there's no meaningful
+     * ensemble-based confidence measure for a non-ensemble model.
+     */
+    public Optional<Signal> evaluate(Market market, BigDecimal modelProbability, String sourceType, String sourceReferenceId) {
+        Optional<SignalConfig> config = preCheck(market);
+        if (config.isEmpty()) {
+            return Optional.empty();
+        }
+
+        return buildSignal(market, modelProbability, 0, config.get()).map(signal -> {
+            signal.setSourceType(sourceType);
+            signal.setSourceReferenceId(sourceReferenceId);
+            Signal saved = signalRepository.save(signal);
+            logSignal(saved);
+            return saved;
+        });
+    }
+
+    /** Dedup, fillability, and config-exists — cheap enough to run before touching the model. */
+    private Optional<SignalConfig> preCheck(Market market) {
         if (signalRepository.existsByMarketIdAndStatusIn(market.getId(), OPEN_SIGNAL_STATUSES)) {
             log.debug("Skipping {}: already has an active or acted-on signal", market.getId());
             return Optional.empty();
@@ -77,10 +129,12 @@ public class SignalGenerationService {
         Optional<SignalConfig> config = signalConfigRepository.findAll().stream().findFirst();
         if (config.isEmpty()) {
             log.warn("No SignalConfig found — cannot evaluate {}", market.getId());
-            return Optional.empty();
         }
+        return config;
+    }
 
-        BigDecimal modelProbability = signalProvider.computeProbability(market, forecast);
+    /** Edge/fee math and thresholding once pre-checks have passed. Returns an unsaved Signal. */
+    private Optional<Signal> buildSignal(Market market, BigDecimal modelProbability, int ensembleMemberCount, SignalConfig config) {
         BigDecimal marketImpliedProbability = midpoint(market.getYesBid(), market.getYesAsk());
 
         BigDecimal diff = modelProbability.subtract(marketImpliedProbability);
@@ -96,7 +150,7 @@ public class SignalGenerationService {
                 .setScale(PERCENT_SCALE, RoundingMode.HALF_UP);
         BigDecimal netEdgePercent = edgePercent.subtract(feePercent);
 
-        if (!clearsThreshold(config.get(), edgePercent, netEdgePercent, modelProbability, forecast)) {
+        if (!clearsThreshold(config, edgePercent, netEdgePercent, modelProbability, ensembleMemberCount)) {
             return Optional.empty();
         }
 
@@ -108,19 +162,21 @@ public class SignalGenerationService {
         signal.setEdgePercent(edgePercent);
         signal.setNetEdgePercent(netEdgePercent);
         signal.setDirection(direction);
-        signal.setForecastId(forecast.getId());
-        signal.setConfigId(config.get().getId());
+        signal.setConfigId(config.getId());
         signal.setStatus(SignalStatus.ACTIVE);
 
-        Signal saved = signalRepository.save(signal);
+        return Optional.of(signal);
+    }
+
+    private void logSignal(Signal signal) {
         log.info("Signal: {} {} edge={}% netEdge={}% (model={}, market={})",
-                direction, market.getId(), edgePercent, netEdgePercent, modelProbability, marketImpliedProbability);
-        return Optional.of(saved);
+                signal.getDirection(), signal.getMarketId(), signal.getEdgePercent(),
+                signal.getNetEdgePercent(), signal.getModelProbability(), signal.getMarketImpliedProbability());
     }
 
     private boolean clearsThreshold(
             SignalConfig config, BigDecimal edgePercent, BigDecimal netEdgePercent,
-            BigDecimal modelProbability, EnsembleForecast forecast
+            BigDecimal modelProbability, int ensembleMemberCount
     ) {
         return switch (config.getThresholdMode()) {
             case FLAT_PERCENT -> config.getFlatThresholdPercent() != null
@@ -128,7 +184,7 @@ public class SignalGenerationService {
             case FEE_ADJUSTED -> config.getMinNetEdgeAfterFees() != null
                     && netEdgePercent.compareTo(config.getMinNetEdgeAfterFees()) >= 0;
             case CONFIDENCE_ADJUSTED -> config.getMinZScore() != null
-                    && zScore(edgePercent, modelProbability, forecast).compareTo(config.getMinZScore()) >= 0;
+                    && zScore(edgePercent, modelProbability, ensembleMemberCount).compareTo(config.getMinZScore()) >= 0;
         };
     }
 
@@ -136,15 +192,15 @@ public class SignalGenerationService {
      * Not specified precisely in the design doc beyond the mode's name — interpreted here as
      * the edge (as a probability) divided by the binomial standard error of the empirical
      * ensemble probability (sqrt(p*(1-p)/n)), i.e. "how many standard errors is the edge
-     * away from noise, given how many ensemble members we're estimating from."
+     * away from noise, given how many ensemble members we're estimating from." Zero for
+     * non-ensemble sources (n=0), which correctly never clears a positive threshold.
      */
-    private BigDecimal zScore(BigDecimal edgePercent, BigDecimal modelProbability, EnsembleForecast forecast) {
-        int n = forecast.getMemberValuesF() != null ? forecast.getMemberValuesF().length : 0;
-        if (n == 0) {
+    private BigDecimal zScore(BigDecimal edgePercent, BigDecimal modelProbability, int ensembleMemberCount) {
+        if (ensembleMemberCount == 0) {
             return BigDecimal.ZERO;
         }
         double p = modelProbability.doubleValue();
-        double standardError = Math.sqrt(p * (1 - p) / n);
+        double standardError = Math.sqrt(p * (1 - p) / ensembleMemberCount);
         if (standardError == 0) {
             return BigDecimal.valueOf(Double.MAX_VALUE); // a degenerate, unanimous ensemble is maximally confident
         }

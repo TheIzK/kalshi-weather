@@ -46,8 +46,16 @@ public class Signal {
     @Column(name = "direction", length = 20, nullable = false)
     private SignalDirection direction;
 
-    @Column(name = "forecast_id", nullable = false)
+    @Column(name = "forecast_id")
     private UUID forecastId;
+
+    /** Generic provenance for non-weather signals (MLB, future NFL/CFB). Weather signals
+     * leave these null and use forecastId instead. */
+    @Column(name = "source_type", length = 20)
+    private String sourceType;
+
+    @Column(name = "source_reference_id", length = 64)
+    private String sourceReferenceId;
 
     @Column(name = "config_id", nullable = false)
     private UUID configId;
@@ -126,6 +134,22 @@ public class Signal {
 
     public void setForecastId(UUID forecastId) {
         this.forecastId = forecastId;
+    }
+
+    public String getSourceType() {
+        return sourceType;
+    }
+
+    public void setSourceType(String sourceType) {
+        this.sourceType = sourceType;
+    }
+
+    public String getSourceReferenceId() {
+        return sourceReferenceId;
+    }
+
+    public void setSourceReferenceId(String sourceReferenceId) {
+        this.sourceReferenceId = sourceReferenceId;
     }
 
     public UUID getConfigId() {
