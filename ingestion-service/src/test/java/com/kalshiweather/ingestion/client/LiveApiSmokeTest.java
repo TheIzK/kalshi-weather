@@ -5,6 +5,8 @@ import com.kalshiweather.ingestion.client.nws.NwsClient;
 import com.kalshiweather.ingestion.client.openmeteo.OpenMeteoClient;
 import com.kalshiweather.ingestion.domain.entity.EnsembleForecast;
 import com.kalshiweather.ingestion.domain.entity.Market;
+import com.kalshiweather.ingestion.domain.enums.MarketResult;
+import com.kalshiweather.ingestion.domain.enums.MarketStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -52,11 +54,7 @@ class LiveApiSmokeTest {
 
     /**
      * Verifies the single-market endpoint (GET /markets/{ticker}) and response envelope shape
-     * assumed by {@link KalshiClient#fetchMarket} — used by settlement reconciliation. Can only
-     * be checked against a currently-open market here (no stable settled-ticker to hardcode), so
-     * this doesn't confirm the "yes"/"no" result wire values themselves — that gets a first real
-     * confirmation once a live paper trade actually settles; a wrong assumption there would show
-     * up as a logged, non-fatal error in SettlementReconciliationService, not silent corruption.
+     * assumed by {@link KalshiClient#fetchMarket} — used by settlement reconciliation.
      */
     @Test
     void kalshiClient_fetchesSingleMarketByTicker() {
@@ -68,6 +66,21 @@ class LiveApiSmokeTest {
         assertThat(fetched.getYesBid()).isNotNull();
         assertThat(fetched.getYesAsk()).isNotNull();
         assertThat(fetched.getResult()).isNull(); // not yet settled
+    }
+
+    /**
+     * Regression test for a real production bug (2026-08-16): a resolved market's wire status
+     * is "finalized", not "settled" as originally assumed — that silently defaulted every
+     * resolved market to CLOSED instead of RESOLVED, so SettlementReconciliationService never
+     * closed a single paper trade for three days despite markets actually settling. This pins
+     * the mapping against a real, permanently-settled market so the bug can't quietly return.
+     */
+    @Test
+    void kalshiClient_mapsFinalizedStatusToResolvedWithResult() {
+        Market fetched = kalshiClient.fetchMarket("KXHIGHNY-26AUG14-T85", "KXHIGHNY");
+
+        assertThat(fetched.getStatus()).isEqualTo(MarketStatus.RESOLVED);
+        assertThat(fetched.getResult()).isEqualTo(MarketResult.YES);
     }
 
     @Test

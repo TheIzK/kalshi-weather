@@ -25,11 +25,17 @@ public class KalshiClient {
     /**
      * The {@code status=open} query filter is Kalshi's own vocabulary; the status value
      * actually returned on each market object is different (verified against live data).
+     * A resolved market's wire status is "finalized", not "settled" as originally assumed —
+     * that wrong guess silently defaulted every resolved market to CLOSED instead of RESOLVED,
+     * so settlement reconciliation never fired a single close for three days (verified against
+     * a real settled KXHIGHNY market's raw API response on 2026-08-16). "settled" is kept too
+     * in case it's a real value in some other context; costs nothing to accept both.
      */
     private static final Map<String, MarketStatus> STATUS_BY_WIRE_VALUE = Map.of(
             "active", MarketStatus.ACTIVE,
             "closed", MarketStatus.CLOSED,
-            "settled", MarketStatus.RESOLVED
+            "settled", MarketStatus.RESOLVED,
+            "finalized", MarketStatus.RESOLVED
     );
 
     /** Blank is the normal case (not yet settled) — only a non-blank, unrecognized value warns. */
