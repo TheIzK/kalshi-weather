@@ -8,6 +8,7 @@ import com.kalshiweather.ingestion.mlb.entity.MlbTeam;
 import com.kalshiweather.ingestion.mlb.entity.MlbWinProbabilitySnapshot;
 import com.kalshiweather.ingestion.mlb.repository.MlbGameRepository;
 import com.kalshiweather.ingestion.mlb.repository.MlbTeamRepository;
+import com.kalshiweather.ingestion.repository.MarketRepository;
 import com.kalshiweather.ingestion.signal.SignalGenerationService;
 import com.kalshiweather.ingestion.trade.PaperTradeService;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,6 +40,8 @@ class MlbSignalGenerationServiceTest {
     @Mock
     private KalshiClient kalshiClient;
     @Mock
+    private MarketRepository marketRepository;
+    @Mock
     private SignalGenerationService signalGenerationService;
     @Mock
     private PaperTradeService paperTradeService;
@@ -53,7 +56,11 @@ class MlbSignalGenerationServiceTest {
     void setUp() {
         service = new MlbSignalGenerationService(
                 gameRepository, teamRepository, winProbabilityService, kalshiClient,
-                signalGenerationService, paperTradeService);
+                marketRepository, signalGenerationService, paperTradeService);
+
+        // mirrors real saveAll() behavior closely enough for these tests: echoes back
+        // whatever list was fetched, so downstream matching still finds the same markets.
+        lenient().when(marketRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     private MlbGame game() {
@@ -89,6 +96,28 @@ class MlbSignalGenerationServiceTest {
         snapshot.setId(42L);
         snapshot.setHomeWinProbability(new BigDecimal(homeWinProbability));
         return snapshot;
+    }
+
+    /**
+     * Regression test for a real production bug (2026-08-17): signals.market_id and
+     * paper_trades.market_id are FKs to markets(id), but fetched Kalshi markets were never
+     * persisted here — every MLB signal attempt failed with a foreign key violation, caught
+     * silently by the per-game try/catch, so nothing appeared broken until the DB was
+     * checked directly.
+     */
+    @Test
+    void persistsFetchedMarketsBeforeSignalingOnThem() {
+        when(gameRepository.findGamesWithConfirmedPitchers(any())).thenReturn(List.of(game()));
+        when(winProbabilityService.computeAndPersist(any())).thenReturn(Optional.of(snapshot("0.65")));
+        when(teamRepository.findById(HOME_TEAM)).thenReturn(Optional.of(team(HOME_TEAM, "CWS")));
+
+        Market homeMarket = kalshiMarket("KXMLBGAME-26AUG191420CWSCHC-CWS", GAME_DATE);
+        when(kalshiClient.fetchOpenMarkets("KXMLBGAME")).thenReturn(List.of(homeMarket));
+        when(signalGenerationService.evaluate(eq(homeMarket), any(), any(), any())).thenReturn(Optional.empty());
+
+        service.evaluateTodaysGames();
+
+        verify(marketRepository).saveAll(List.of(homeMarket));
     }
 
     @Test

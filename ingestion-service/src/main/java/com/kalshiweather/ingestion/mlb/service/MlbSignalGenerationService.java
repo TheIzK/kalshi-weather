@@ -7,6 +7,7 @@ import com.kalshiweather.ingestion.mlb.entity.MlbTeam;
 import com.kalshiweather.ingestion.mlb.entity.MlbWinProbabilitySnapshot;
 import com.kalshiweather.ingestion.mlb.repository.MlbGameRepository;
 import com.kalshiweather.ingestion.mlb.repository.MlbTeamRepository;
+import com.kalshiweather.ingestion.repository.MarketRepository;
 import com.kalshiweather.ingestion.signal.SignalGenerationService;
 import com.kalshiweather.ingestion.trade.PaperTradeService;
 import org.slf4j.Logger;
@@ -49,6 +50,7 @@ public class MlbSignalGenerationService {
     private final MlbTeamRepository teamRepository;
     private final MlbWinProbabilityService winProbabilityService;
     private final KalshiClient kalshiClient;
+    private final MarketRepository marketRepository;
     private final SignalGenerationService signalGenerationService;
     private final PaperTradeService paperTradeService;
 
@@ -57,6 +59,7 @@ public class MlbSignalGenerationService {
             MlbTeamRepository teamRepository,
             MlbWinProbabilityService winProbabilityService,
             KalshiClient kalshiClient,
+            MarketRepository marketRepository,
             SignalGenerationService signalGenerationService,
             PaperTradeService paperTradeService
     ) {
@@ -64,6 +67,7 @@ public class MlbSignalGenerationService {
         this.teamRepository = teamRepository;
         this.winProbabilityService = winProbabilityService;
         this.kalshiClient = kalshiClient;
+        this.marketRepository = marketRepository;
         this.signalGenerationService = signalGenerationService;
         this.paperTradeService = paperTradeService;
     }
@@ -79,8 +83,12 @@ public class MlbSignalGenerationService {
         List<Market> openMarkets;
         try {
             openMarkets = kalshiClient.fetchOpenMarkets(SERIES_TICKER);
+            // signals.market_id and paper_trades.market_id are FKs to markets(id) — these
+            // must be persisted before any signal/trade can reference them, same as
+            // IngestionOrchestrator.ingestMarkets() already does for weather.
+            openMarkets = marketRepository.saveAll(openMarkets);
         } catch (Exception e) {
-            log.error("Failed to fetch {} markets: {}", SERIES_TICKER, e.getMessage(), e);
+            log.error("Failed to fetch/persist {} markets: {}", SERIES_TICKER, e.getMessage(), e);
             return;
         }
 
