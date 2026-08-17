@@ -80,6 +80,21 @@ ssh root@159.203.139.141 "docker ps; docker logs kalshi-ingestion --tail 50"
 ssh root@159.203.139.141 "docker exec kalshi-weather-postgres-1 psql -U kalshi -d kalshi_signals -c 'SELECT ...'"
 ```
 
+**Token-gated internal endpoints** (port 8080, published — not loopback-only, unlike Postgres/
+Redis — gated by the `STATUS_API_TOKEN` env var instead, stored only in the droplet's
+gitignored `.env`, header `X-Status-Token`):
+- `GET /internal/status` — paper-trade counts + latest open/closed, for an external checker
+  that can't reach Postgres directly (`StatusController`).
+- `POST /internal/mlb/refresh` — manually runs `MlbIngestionOrchestrator.dailyRefresh()`
+  (schedule/pitchers/stats/standings) on demand, e.g. after a redeploy that happened past
+  7am America/New_York that day, instead of waiting until the next morning
+  (`MlbAdminController`).
+```
+TOKEN=<value, in the droplet's /opt/kalshi-weather/.env>
+curl -H "X-Status-Token: $TOKEN" http://159.203.139.141:8080/internal/status
+curl -X POST -H "X-Status-Token: $TOKEN" http://159.203.139.141:8080/internal/mlb/refresh
+```
+
 ## Key decisions
 
 - **Ingestion interval: 15 minutes** (`ingestion.schedule.fixed-delay-ms`). Not the bottleneck —
