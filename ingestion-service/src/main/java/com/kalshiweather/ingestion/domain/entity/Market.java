@@ -9,8 +9,10 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 
 @Entity
@@ -70,6 +72,12 @@ public class Market {
     /** Kalshi's open_interest_fp — used as the real fillability signal for signal generation. */
     @Column(name = "open_interest", precision = 14, scale = 4, nullable = false)
     private BigDecimal openInterest;
+
+    /** Bumped on every save (every ingestion cycle re-saves each open market regardless of
+     * whether anything changed) — a free "last successful ingestion" signal per series. */
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
 
     public String getId() {
         return id;
@@ -197,5 +205,9 @@ public class Market {
 
     public void setOpenInterest(BigDecimal openInterest) {
         this.openInterest = openInterest;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
     }
 }
