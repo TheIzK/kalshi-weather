@@ -3,10 +3,12 @@ package com.kalshiweather.ingestion.status;
 import com.kalshiweather.ingestion.domain.entity.Market;
 import com.kalshiweather.ingestion.domain.entity.PaperTrade;
 import com.kalshiweather.ingestion.domain.entity.Signal;
+import com.kalshiweather.ingestion.domain.entity.SubjectStation;
 import com.kalshiweather.ingestion.domain.enums.TradeStatus;
 import com.kalshiweather.ingestion.repository.MarketRepository;
 import com.kalshiweather.ingestion.repository.PaperTradeRepository;
 import com.kalshiweather.ingestion.repository.SignalRepository;
+import com.kalshiweather.ingestion.repository.SubjectStationRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -19,11 +21,13 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -31,34 +35,49 @@ import java.util.stream.Stream;
 
 /**
  * Richer, token-gated read endpoint for an external dashboard (isaacmelton.dev/kalshi) —
- * open positions and recent closed trades grouped by {@code series_ticker}, per-series and
- * overall P&amp;L/win-rate stats, and a last-ingested-at health signal per series. Same
- * auth pattern as {@link StatusController}, which stays as-is for its existing lightweight
- * consumer. Grouping by {@code series_ticker} rather than {@code subject_stations} is
- * deliberate: it covers MLB's {@code KXMLBGAME} for free alongside every weather city, with
- * no sport-specific code, consistent with how the rest of this codebase treats weather and
- * MLB as instances of the same domain-agnostic Signal/PaperTrade pipeline.
+ * open positions and full closed-trade history grouped by domain (weather vs. each sport)
+ * and then by {@code series_ticker} within it, with per-series/per-domain/overall P&amp;L and
+ * win-rate stats, and a last-ingested-at health signal per series. Same auth pattern as
+ * {@link StatusController}, which stays as-is for its existing lightweight consumer.
+ *
+ * <p>Domain is weather iff the series is in {@code subject_stations} (the authoritative,
+ * always-populated source of truth for "is this a weather subject" — reliable even for a
+ * series that hasn't produced a single signal yet). Everything else is a sport, named from
+ * {@link Signal#getSourceType()} — the token before its first {@code _} (e.g.
+ * {@code "MLB_WIN_PROBABILITY"} → {@code "MLB"}) — falling back to the raw series ticker only
+ * in the on-paper-only case where a brand-new sport has ingested markets but has never yet
+ * produced a qualifying signal to name itself from. This is generic on purpose — a future
+ * NFL/CFB series buckets and names itself correctly with zero further backend changes,
+ * consistent with how this codebase already treats every sport as a domain-agnostic instance
+ * of the same Signal/PaperTrade pipeline.
  */
 @RestController
 @RequestMapping("/internal")
 public class DashboardController {
 
-    private static final int RECENT_CLOSED_PER_SERIES = 15;
+    /** Generous safety cap, not a real limit — the whole system has ~45 closed trades ever
+     * as of writing, so this only guards against unbounded growth much later. */
+    private static final int MAX_CLOSED_TRADES_PER_SERIES = 500;
+
+    private static final String WEATHER_DOMAIN = "WEATHER";
 
     private final PaperTradeRepository paperTradeRepository;
     private final SignalRepository signalRepository;
     private final MarketRepository marketRepository;
+    private final SubjectStationRepository subjectStationRepository;
     private final String expectedToken;
 
     public DashboardController(
             PaperTradeRepository paperTradeRepository,
             SignalRepository signalRepository,
             MarketRepository marketRepository,
+            SubjectStationRepository subjectStationRepository,
             @Value("${status.api.token:}") String expectedToken
     ) {
         this.paperTradeRepository = paperTradeRepository;
         this.signalRepository = signalRepository;
         this.marketRepository = marketRepository;
+        this.subjectStationRepository = subjectStationRepository;
         this.expectedToken = expectedToken;
     }
 
@@ -71,19 +90,22 @@ public class DashboardController {
 
         List<PaperTrade> open = paperTradeRepository.findByStatus(TradeStatus.OPEN);
         List<PaperTrade> closed = paperTradeRepository.findByStatus(TradeStatus.CLOSED);
+        List<PaperTrade> all = Stream.concat(open.stream(), closed.stream()).toList();
 
-        Set<String> marketIds = Stream.concat(open.stream(), closed.stream())
-                .map(PaperTrade::getMarketId)
-                .collect(Collectors.toSet());
+        Set<String> marketIds = all.stream().map(PaperTrade::getMarketId).collect(Collectors.toSet());
         Map<String, Market> marketsById = marketRepository.findAllById(marketIds).stream()
                 .collect(Collectors.toMap(Market::getId, m -> m));
 
-        Set<UUID> signalIds = open.stream().map(PaperTrade::getSignalId).collect(Collectors.toSet());
+        Set<UUID> signalIds = all.stream().map(PaperTrade::getSignalId).collect(Collectors.toSet());
         Map<UUID, Signal> signalsById = signalRepository.findAllById(signalIds).stream()
                 .collect(Collectors.toMap(Signal::getId, s -> s));
 
         Map<String, Instant> lastIngestedBySeries = marketRepository.findLastUpdatedPerSeries().stream()
                 .collect(Collectors.toMap(row -> (String) row[0], row -> (Instant) row[1]));
+
+        Set<String> weatherSeriesTickers = subjectStationRepository.findAll().stream()
+                .map(SubjectStation::getSeriesTicker)
+                .collect(Collectors.toSet());
 
         Map<String, List<PaperTrade>> openBySeries = groupBySeries(open, marketsById);
         Map<String, List<PaperTrade>> closedBySeries = groupBySeries(closed, marketsById);
@@ -93,7 +115,71 @@ public class DashboardController {
         allSeries.addAll(closedBySeries.keySet());
         allSeries.addAll(lastIngestedBySeries.keySet());
 
-        List<SeriesSummary> series = allSeries.stream()
+        Map<String, List<String>> seriesByDomain = new TreeMap<>();
+        for (String seriesTicker : allSeries) {
+            String domain = domainFor(seriesTicker, weatherSeriesTickers, openBySeries, closedBySeries, signalsById);
+            seriesByDomain.computeIfAbsent(domain, d -> new ArrayList<>()).add(seriesTicker);
+        }
+
+        List<DomainSummary> domains = seriesByDomain.entrySet().stream()
+                .map(entry -> buildDomainSummary(
+                        entry.getKey(),
+                        entry.getValue(),
+                        openBySeries,
+                        closedBySeries,
+                        marketsById,
+                        signalsById,
+                        lastIngestedBySeries))
+                .toList();
+
+        OverallStats overall = new OverallStats(open.size(), closed.size(), totalPnl(closed), winRate(closed));
+
+        return ResponseEntity.ok(new DashboardResponse(Instant.now(), overall, domains));
+    }
+
+    private String domainFor(
+            String seriesTicker,
+            Set<String> weatherSeriesTickers,
+            Map<String, List<PaperTrade>> openBySeries,
+            Map<String, List<PaperTrade>> closedBySeries,
+            Map<UUID, Signal> signalsById) {
+
+        if (weatherSeriesTickers.contains(seriesTicker)) {
+            return WEATHER_DOMAIN;
+        }
+
+        Stream<PaperTrade> seriesTrades = Stream.concat(
+                openBySeries.getOrDefault(seriesTicker, List.of()).stream(),
+                closedBySeries.getOrDefault(seriesTicker, List.of()).stream());
+
+        return seriesTrades
+                .map(t -> signalsById.get(t.getSignalId()))
+                .filter(Objects::nonNull)
+                .map(Signal::getSourceType)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .map(sourceType -> sourceType.split("_", 2)[0])
+                // Not classifiable yet (a sport series that has ingested markets but never
+                // produced a qualifying signal) — show its own ticker rather than mislabel it.
+                .orElse(seriesTicker);
+    }
+
+    private Map<String, List<PaperTrade>> groupBySeries(List<PaperTrade> trades, Map<String, Market> marketsById) {
+        return trades.stream()
+                .filter(t -> marketsById.containsKey(t.getMarketId()))
+                .collect(Collectors.groupingBy(t -> marketsById.get(t.getMarketId()).getSeriesTicker()));
+    }
+
+    private DomainSummary buildDomainSummary(
+            String domain,
+            List<String> seriesTickers,
+            Map<String, List<PaperTrade>> openBySeries,
+            Map<String, List<PaperTrade>> closedBySeries,
+            Map<String, Market> marketsById,
+            Map<UUID, Signal> signalsById,
+            Map<String, Instant> lastIngestedBySeries) {
+
+        List<SeriesSummary> series = seriesTickers.stream()
                 .map(seriesTicker -> buildSeriesSummary(
                         seriesTicker,
                         openBySeries.getOrDefault(seriesTicker, List.of()),
@@ -103,15 +189,17 @@ public class DashboardController {
                         lastIngestedBySeries.get(seriesTicker)))
                 .toList();
 
-        OverallStats overall = new OverallStats(open.size(), closed.size(), totalPnl(closed), winRate(closed));
+        List<PaperTrade> domainOpen = seriesTickers.stream()
+                .flatMap(s -> openBySeries.getOrDefault(s, List.of()).stream())
+                .toList();
+        List<PaperTrade> domainClosed = seriesTickers.stream()
+                .flatMap(s -> closedBySeries.getOrDefault(s, List.of()).stream())
+                .toList();
 
-        return ResponseEntity.ok(new DashboardResponse(Instant.now(), overall, series));
-    }
+        OverallStats stats = new OverallStats(
+                domainOpen.size(), domainClosed.size(), totalPnl(domainClosed), winRate(domainClosed));
 
-    private Map<String, List<PaperTrade>> groupBySeries(List<PaperTrade> trades, Map<String, Market> marketsById) {
-        return trades.stream()
-                .filter(t -> marketsById.containsKey(t.getMarketId()))
-                .collect(Collectors.groupingBy(t -> marketsById.get(t.getMarketId()).getSeriesTicker()));
+        return new DomainSummary(domain, stats, series);
     }
 
     private SeriesSummary buildSeriesSummary(
@@ -127,10 +215,10 @@ public class DashboardController {
                 .sorted(Comparator.comparing(OpenPosition::openedAt).reversed())
                 .toList();
 
-        List<ClosedTrade> recentClosed = closed.stream()
+        List<ClosedTrade> closedTrades = closed.stream()
                 .sorted(Comparator.comparing(PaperTrade::getClosedAt).reversed())
-                .limit(RECENT_CLOSED_PER_SERIES)
-                .map(this::toClosedTrade)
+                .limit(MAX_CLOSED_TRADES_PER_SERIES)
+                .map(t -> toClosedTrade(t, signalsById.get(t.getSignalId())))
                 .toList();
 
         return new SeriesSummary(
@@ -141,7 +229,7 @@ public class DashboardController {
                 totalPnl(closed),
                 winRate(closed),
                 openPositions,
-                recentClosed);
+                closedTrades);
     }
 
     private OpenPosition toOpenPosition(PaperTrade trade, Market market, Signal signal) {
@@ -159,14 +247,16 @@ public class DashboardController {
                 market == null ? null : market.getOccurrenceDate());
     }
 
-    private ClosedTrade toClosedTrade(PaperTrade trade) {
+    private ClosedTrade toClosedTrade(PaperTrade trade, Signal signal) {
         return new ClosedTrade(
                 trade.getMarketId(),
                 trade.getSide().name(),
                 trade.getEntryPrice(),
                 trade.getExitPrice(),
                 trade.getPnl(),
-                trade.getClosedAt());
+                trade.getClosedAt(),
+                signal == null ? null : signal.getEdgePercent(),
+                signal == null ? null : signal.getNetEdgePercent());
     }
 
     private BigDecimal totalPnl(List<PaperTrade> closed) {
@@ -187,10 +277,13 @@ public class DashboardController {
         return BigDecimal.valueOf(wins).divide(BigDecimal.valueOf(closed.size()), 4, RoundingMode.HALF_UP);
     }
 
-    public record DashboardResponse(Instant generatedAt, OverallStats overall, List<SeriesSummary> series) {
+    public record DashboardResponse(Instant generatedAt, OverallStats overall, List<DomainSummary> domains) {
     }
 
     public record OverallStats(int openCount, int closedCount, BigDecimal totalPnl, BigDecimal winRate) {
+    }
+
+    public record DomainSummary(String domain, OverallStats stats, List<SeriesSummary> series) {
     }
 
     public record SeriesSummary(
@@ -201,7 +294,7 @@ public class DashboardController {
             BigDecimal totalPnl,
             BigDecimal winRate,
             List<OpenPosition> openPositions,
-            List<ClosedTrade> recentClosedTrades) {
+            List<ClosedTrade> closedTrades) {
     }
 
     public record OpenPosition(
@@ -224,6 +317,8 @@ public class DashboardController {
             BigDecimal entryPrice,
             BigDecimal exitPrice,
             BigDecimal pnl,
-            Instant closedAt) {
+            Instant closedAt,
+            BigDecimal edgePercent,
+            BigDecimal netEdgePercent) {
     }
 }
