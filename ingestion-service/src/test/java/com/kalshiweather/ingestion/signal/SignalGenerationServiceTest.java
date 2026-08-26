@@ -55,7 +55,7 @@ class SignalGenerationServiceTest {
         lenient().when(signalRepository.existsByMarketIdAndStatusIn(any(), any())).thenReturn(false);
     }
 
-    /** yesBid=0.55, yesAsk=0.60 -> implied 0.575; model=0.65 -> edge=7.5%, fee=7%*(1-0.60)=2.8%, net=4.7%. */
+    /** yesBid=0.55, yesAsk=0.60 -> implied 0.575; model=0.65 -> edge=7.5%, fee=7%*0.60*(1-0.60)=1.68%, net=5.82%. */
     private Market marketWithSpread() {
         Market market = new Market();
         market.setId("KXHIGHNY-TEST");
@@ -83,7 +83,7 @@ class SignalGenerationServiceTest {
         assertThat(signal.getModelProbability()).isEqualByComparingTo("0.65000");
         assertThat(signal.getMarketImpliedProbability()).isEqualByComparingTo("0.57500");
         assertThat(signal.getEdgePercent()).isEqualByComparingTo("7.500");
-        assertThat(signal.getNetEdgePercent()).isEqualByComparingTo("4.700");
+        assertThat(signal.getNetEdgePercent()).isEqualByComparingTo("5.820");
         assertThat(signal.getForecastId()).isEqualTo(forecast.getId());
         verify(signalRepository).save(any(Signal.class));
     }
@@ -92,7 +92,7 @@ class SignalGenerationServiceTest {
     void feeAdjusted_rejectsWhenNetEdgeMissesThreshold() {
         when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
         when(signalConfigRepository.findAll()).thenReturn(List.of(
-                config(ThresholdMode.FEE_ADJUSTED, null, new BigDecimal("5.000"), null))); // net edge is 4.7%
+                config(ThresholdMode.FEE_ADJUSTED, null, new BigDecimal("6.000"), null))); // net edge is 5.82%
 
         Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
 
@@ -123,6 +123,74 @@ class SignalGenerationServiceTest {
 
         assertThat(result).isPresent();
         assertThat(result.get().getDirection()).isEqualTo(SignalDirection.BUY_NO);
+    }
+
+    /** yesBid=0.02, yesAsk=0.04 -> implied 0.03. */
+    private Market longShotMarket() {
+        Market market = new Market();
+        market.setId("KXHIGHNY-LONGSHOT");
+        market.setStrikeType(StrikeType.GREATER);
+        market.setFloorStrike(new BigDecimal("95"));
+        market.setYesBid(new BigDecimal("0.02"));
+        market.setYesAsk(new BigDecimal("0.04"));
+        market.setNoBid(new BigDecimal("0.96"));
+        market.setNoAsk(new BigDecimal("0.98"));
+        market.setOpenInterest(new BigDecimal("500"));
+        return market;
+    }
+
+    /** yesBid=0.97, yesAsk=0.99 -> implied 0.98. */
+    private Market longShotNoMarket() {
+        Market market = new Market();
+        market.setId("KXHIGHNY-LONGSHOT-NO");
+        market.setStrikeType(StrikeType.GREATER);
+        market.setFloorStrike(new BigDecimal("70"));
+        market.setYesBid(new BigDecimal("0.97"));
+        market.setYesAsk(new BigDecimal("0.99"));
+        market.setNoBid(new BigDecimal("0.01"));
+        market.setNoAsk(new BigDecimal("0.03"));
+        market.setOpenInterest(new BigDecimal("500"));
+        return market;
+    }
+
+    @Test
+    void minModelConfidence_rejectsLongShotBuyYesBelowFloor() {
+        // model=0.15 vs implied=0.03 -> BUY_YES, edge=12% (would clear a 1% flat threshold),
+        // but confidence in YES is only 15% -> the guardrail should reject it regardless.
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.15"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null, new BigDecimal("50.00"))));
+
+        Optional<Signal> result = service.evaluate(longShotMarket(), forecast);
+
+        assertThat(result).isEmpty();
+        verify(signalRepository, never()).save(any());
+    }
+
+    @Test
+    void minModelConfidence_rejectsLongShotBuyNoBelowFloor() {
+        // model=0.85 vs implied=0.98 -> BUY_NO, edge=13% (would clear a 1% flat threshold),
+        // but confidence in NO is only 15% (1 - 0.85) -> the guardrail should reject it.
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.85"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null, new BigDecimal("50.00"))));
+
+        Optional<Signal> result = service.evaluate(longShotNoMarket(), forecast);
+
+        assertThat(result).isEmpty();
+        verify(signalRepository, never()).save(any());
+    }
+
+    @Test
+    void minModelConfidence_doesNotBlockWhenFloorNotConfigured() {
+        // same long-shot signal as above, but no floor configured on this config row
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.15"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null)));
+
+        Optional<Signal> result = service.evaluate(longShotMarket(), forecast);
+
+        assertThat(result).isPresent();
     }
 
     @Test
@@ -236,12 +304,19 @@ class SignalGenerationServiceTest {
     }
 
     private SignalConfig config(ThresholdMode mode, BigDecimal flat, BigDecimal netEdge, BigDecimal zScore) {
+        return config(mode, flat, netEdge, zScore, null);
+    }
+
+    private SignalConfig config(
+            ThresholdMode mode, BigDecimal flat, BigDecimal netEdge, BigDecimal zScore, BigDecimal minModelConfidencePercent
+    ) {
         SignalConfig config = new SignalConfig();
         config.setId(UUID.randomUUID());
         config.setThresholdMode(mode);
         config.setFlatThresholdPercent(flat);
         config.setMinNetEdgeAfterFees(netEdge);
         config.setMinZScore(zScore);
+        config.setMinModelConfidencePercent(minModelConfidencePercent);
         return config;
     }
 }

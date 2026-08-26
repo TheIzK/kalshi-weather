@@ -35,6 +35,12 @@ public class SignalConfig {
     @Column(name = "min_z_score", precision = 5, scale = 3)
     private BigDecimal minZScore;
 
+    /** Optional floor on the model's stated probability for the side actually being traded
+     * (as a percent, e.g. 50.00). Independent of thresholdMode — applies to all three modes as
+     * an additional gate. Null means no floor. See buildSignal's guardrail comment for why. */
+    @Column(name = "min_model_confidence_percent", precision = 5, scale = 2)
+    private BigDecimal minModelConfidencePercent;
+
     public UUID getId() {
         return id;
     }
@@ -73,5 +79,13 @@ public class SignalConfig {
 
     public void setMinZScore(BigDecimal minZScore) {
         this.minZScore = minZScore;
+    }
+
+    public BigDecimal getMinModelConfidencePercent() {
+        return minModelConfidencePercent;
+    }
+
+    public void setMinModelConfidencePercent(BigDecimal minModelConfidencePercent) {
+        this.minModelConfidencePercent = minModelConfidencePercent;
     }
 }

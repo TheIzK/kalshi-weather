@@ -39,8 +39,11 @@ public class SignalGenerationService {
 
     private static final Logger log = LoggerFactory.getLogger(SignalGenerationService.class);
 
-    /** Kalshi taker fee: round_up(0.07 * C * P * (1-P)). As a percent of stake this cancels
-     * to 7% * (1 - P) per contract, independent of contract count C. */
+    /** Kalshi taker fee: round_up(0.07 * C * P * (1-P)). edgePercent is expected profit per
+     * $1 of notional (modelProbability - marketImpliedProbability, as a percent), so the fee
+     * must be expressed in that same unit — 7% * P * (1-P) per contract — not as a percent of
+     * stake (7% * (1-P)), which is a different denominator and would net against edgePercent
+     * incorrectly. Independent of contract count C either way. */
     private static final BigDecimal FEE_RATE_PERCENT = BigDecimal.valueOf(7);
 
     /** A starting heuristic, not empirically tuned: wider than this and a quote isn't trusted. */
@@ -143,10 +146,26 @@ public class SignalGenerationService {
         }
 
         SignalDirection direction = diff.compareTo(BigDecimal.ZERO) > 0 ? SignalDirection.BUY_YES : SignalDirection.BUY_NO;
+
+        // Guardrail: don't fade the model's own best guess. Weather trades where the model's
+        // stated probability for the side actually taken was under 50% ("long-shot" value bets,
+        // e.g. buying YES at 15% because the market was pricing it even cheaper) went 0-for-45
+        // across 28 independent city-days (2026-08-15 through 2026-08-26) — see calibration
+        // investigation. Twelve calendar days isn't enough regime diversity to trust a
+        // recalibrated probability curve yet, so this is a blunt, reversible floor rather than
+        // a model change: only take signals the model itself thinks are more likely than not.
+        BigDecimal sideConfidence = direction == SignalDirection.BUY_YES
+                ? modelProbability
+                : BigDecimal.ONE.subtract(modelProbability);
+        if (config.getMinModelConfidencePercent() != null
+                && sideConfidence.multiply(BigDecimal.valueOf(100)).compareTo(config.getMinModelConfidencePercent()) < 0) {
+            return Optional.empty();
+        }
+
         BigDecimal edgePercent = diff.abs().multiply(BigDecimal.valueOf(100)).setScale(PERCENT_SCALE, RoundingMode.HALF_UP);
 
         BigDecimal fillPrice = direction == SignalDirection.BUY_YES ? market.getYesAsk() : market.getNoAsk();
-        BigDecimal feePercent = FEE_RATE_PERCENT.multiply(BigDecimal.ONE.subtract(fillPrice))
+        BigDecimal feePercent = FEE_RATE_PERCENT.multiply(fillPrice).multiply(BigDecimal.ONE.subtract(fillPrice))
                 .setScale(PERCENT_SCALE, RoundingMode.HALF_UP);
         BigDecimal netEdgePercent = edgePercent.subtract(feePercent);
 
