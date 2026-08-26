@@ -12,9 +12,13 @@ status only.
 
 ## Current phase
 `ingestion-service` covers the full vertical slice, generically, over every row in
-`subject_stations` — currently five weather subjects: NYC/KXHIGHNY (Central Park),
+`subject_stations` — currently seven weather subjects: NYC/KXHIGHNY (Central Park),
 CHI/KXHIGHCHI (Chicago Midway), ATL/KXHIGHTATL (Hartsfield-Jackson), MIA/KXHIGHMIA
-(Miami Intl), LAX/KXHIGHLAX (LAX). Adding a subject is seed data only (a `subject_stations`
+(Miami Intl), LAX/KXHIGHLAX (LAX), DEN/KXHIGHDEN (Denver Intl), SEA/KXHIGHTSEA (Seattle-Tacoma
+Intl) — Denver and Seattle added deliberately for climate-regime diversity (Mountain West,
+Pacific Northwest) rather than volume, to accumulate independent signal-calibration samples
+faster; see calibration investigation notes for why regime diversity matters more than trade
+count here. Adding a subject is seed data only (a `subject_stations`
 row), not new code — `IngestionOrchestrator` loops over whatever's configured. Per subject:
 pulls open Kalshi markets and both weather sources, computes a model probability
 (`SignalProvider` — empirical CDF from the Open-Meteo ensemble, normal-fit fallback at the
