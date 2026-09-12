@@ -153,6 +153,56 @@ class SignalGenerationServiceTest {
         return market;
     }
 
+    /** Same prices as marketWithSpread(), but a BETWEEN (narrow fixed-width bin) market. */
+    private Market betweenMarket() {
+        Market market = new Market();
+        market.setId("KXHIGHNY-BETWEEN-TEST");
+        market.setStrikeType(StrikeType.BETWEEN);
+        market.setFloorStrike(new BigDecimal("80"));
+        market.setCapStrike(new BigDecimal("81"));
+        market.setYesBid(new BigDecimal("0.55"));
+        market.setYesAsk(new BigDecimal("0.60"));
+        market.setNoBid(new BigDecimal("0.40"));
+        market.setNoAsk(new BigDecimal("0.45"));
+        market.setOpenInterest(new BigDecimal("500"));
+        return market;
+    }
+
+    @Test
+    void excludeBetweenStrikeType_skipsBetweenMarketBeforeComputingModel() {
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null, null, true)));
+
+        Optional<Signal> result = service.evaluate(betweenMarket(), forecast);
+
+        assertThat(result).isEmpty();
+        verifyNoInteractions(signalProvider);
+        verify(signalRepository, never()).save(any());
+    }
+
+    @Test
+    void excludeBetweenStrikeType_doesNotAffectGreaterOrLessMarkets() {
+        // marketWithSpread() is StrikeType.GREATER
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null, null, true)));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isPresent();
+    }
+
+    @Test
+    void excludeBetweenStrikeType_doesNotBlockWhenFlagNotConfigured() {
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null)));
+
+        Optional<Signal> result = service.evaluate(betweenMarket(), forecast);
+
+        assertThat(result).isPresent();
+    }
+
     @Test
     void minModelConfidence_rejectsLongShotBuyYesBelowFloor() {
         // model=0.15 vs implied=0.03 -> BUY_YES, edge=12% (would clear a 1% flat threshold),
@@ -304,11 +354,18 @@ class SignalGenerationServiceTest {
     }
 
     private SignalConfig config(ThresholdMode mode, BigDecimal flat, BigDecimal netEdge, BigDecimal zScore) {
-        return config(mode, flat, netEdge, zScore, null);
+        return config(mode, flat, netEdge, zScore, null, null);
     }
 
     private SignalConfig config(
             ThresholdMode mode, BigDecimal flat, BigDecimal netEdge, BigDecimal zScore, BigDecimal minModelConfidencePercent
+    ) {
+        return config(mode, flat, netEdge, zScore, minModelConfidencePercent, null);
+    }
+
+    private SignalConfig config(
+            ThresholdMode mode, BigDecimal flat, BigDecimal netEdge, BigDecimal zScore,
+            BigDecimal minModelConfidencePercent, Boolean excludeBetweenStrikeType
     ) {
         SignalConfig config = new SignalConfig();
         config.setId(UUID.randomUUID());
@@ -317,6 +374,7 @@ class SignalGenerationServiceTest {
         config.setMinNetEdgeAfterFees(netEdge);
         config.setMinZScore(zScore);
         config.setMinModelConfidencePercent(minModelConfidencePercent);
+        config.setExcludeBetweenStrikeType(excludeBetweenStrikeType);
         return config;
     }
 }

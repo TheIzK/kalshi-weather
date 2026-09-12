@@ -6,6 +6,7 @@ import com.kalshiweather.ingestion.domain.entity.Signal;
 import com.kalshiweather.ingestion.domain.entity.SignalConfig;
 import com.kalshiweather.ingestion.domain.enums.SignalDirection;
 import com.kalshiweather.ingestion.domain.enums.SignalStatus;
+import com.kalshiweather.ingestion.domain.enums.StrikeType;
 import com.kalshiweather.ingestion.repository.SignalConfigRepository;
 import com.kalshiweather.ingestion.repository.SignalRepository;
 import org.slf4j.Logger;
@@ -132,7 +133,23 @@ public class SignalGenerationService {
         Optional<SignalConfig> config = signalConfigRepository.findAll().stream().findFirst();
         if (config.isEmpty()) {
             log.warn("No SignalConfig found — cannot evaluate {}", market.getId());
+            return config;
         }
+
+        // Guardrail: BETWEEN markets (narrow, fixed-width temperature bins, e.g. "82-83F") are
+        // a persistent structural loser, unlike GREATER/LESS (open-ended tail bins) — full trade
+        // history through 2026-09-08: BETWEEN -$22.30 over 466 trades (-4.8c/trade avg), GREATER
+        // +$1.92 (65 trades), LESS +$1.65 post-guardrail. Consistent across all 7 cities, not a
+        // location- or time-window-specific fluke. Likely mechanism: a narrow bin's empirical-CDF
+        // probability is far more sensitive to ensemble sampling noise than a wide tail's
+        // cumulative probability, given ~119-122 members. Doesn't touch GREATER/LESS or non-weather
+        // sources (MLB markets have no strikeType). Reversible via config, not a model change.
+        if (Boolean.TRUE.equals(config.get().getExcludeBetweenStrikeType())
+                && market.getStrikeType() == StrikeType.BETWEEN) {
+            log.debug("Skipping {}: BETWEEN strike type excluded by config", market.getId());
+            return Optional.empty();
+        }
+
         return config;
     }
 

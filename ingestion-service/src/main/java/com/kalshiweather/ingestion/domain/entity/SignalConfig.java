@@ -41,6 +41,12 @@ public class SignalConfig {
     @Column(name = "min_model_confidence_percent", precision = 5, scale = 2)
     private BigDecimal minModelConfidencePercent;
 
+    /** When true, skip BETWEEN-strike weather markets (narrow fixed-width bins) entirely —
+     * see preCheck's guardrail comment for why. Null/false means no exclusion; doesn't affect
+     * GREATER/LESS weather markets or non-weather (e.g. MLB) sources, which have no strikeType. */
+    @Column(name = "exclude_between_strike_type")
+    private Boolean excludeBetweenStrikeType;
+
     public UUID getId() {
         return id;
     }
@@ -87,5 +93,13 @@ public class SignalConfig {
 
     public void setMinModelConfidencePercent(BigDecimal minModelConfidencePercent) {
         this.minModelConfidencePercent = minModelConfidencePercent;
+    }
+
+    public Boolean getExcludeBetweenStrikeType() {
+        return excludeBetweenStrikeType;
+    }
+
+    public void setExcludeBetweenStrikeType(Boolean excludeBetweenStrikeType) {
+        this.excludeBetweenStrikeType = excludeBetweenStrikeType;
     }
 }
