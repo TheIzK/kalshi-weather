@@ -2,11 +2,12 @@ package com.kalshiweather.ingestion.signal;
 
 import com.kalshiweather.ingestion.domain.entity.EnsembleForecast;
 import com.kalshiweather.ingestion.domain.entity.Market;
+import com.kalshiweather.ingestion.domain.entity.MarketSnapshot;
 import com.kalshiweather.ingestion.domain.entity.Signal;
 import com.kalshiweather.ingestion.domain.entity.SignalConfig;
 import com.kalshiweather.ingestion.domain.enums.SignalDirection;
 import com.kalshiweather.ingestion.domain.enums.SignalStatus;
-import com.kalshiweather.ingestion.domain.enums.StrikeType;
+import com.kalshiweather.ingestion.repository.MarketSnapshotRepository;
 import com.kalshiweather.ingestion.repository.SignalConfigRepository;
 import com.kalshiweather.ingestion.repository.SignalRepository;
 import org.slf4j.Logger;
@@ -59,38 +60,69 @@ public class SignalGenerationService {
     private final SignalProvider signalProvider;
     private final SignalConfigRepository signalConfigRepository;
     private final SignalRepository signalRepository;
+    private final MarketSnapshotRepository marketSnapshotRepository;
 
     public SignalGenerationService(
             SignalProvider signalProvider,
             SignalConfigRepository signalConfigRepository,
-            SignalRepository signalRepository
+            SignalRepository signalRepository,
+            MarketSnapshotRepository marketSnapshotRepository
     ) {
         this.signalProvider = signalProvider;
         this.signalConfigRepository = signalConfigRepository;
         this.signalRepository = signalRepository;
+        this.marketSnapshotRepository = marketSnapshotRepository;
     }
 
     /**
-     * Weather entry point. The dedup/fillable-quote/config pre-checks run first and can
-     * short-circuit before the model probability is ever computed — computeProbability
-     * isn't free, and several tests pin exactly this ordering (verifyNoInteractions on
-     * SignalProvider for markets that should skip before reaching the model at all).
+     * Weather entry point. Unlike the generic overload below, this always records a
+     * {@link MarketSnapshot} once dedup/config pass — fillability and the BETWEEN exclusion
+     * are recorded facts here, not silent skips, so markets we look at but don't trade leave
+     * a permanent trace instead of being overwritten by the next ingestion cycle. Only dedup
+     * and a missing config remain hard gates before the model is ever computed. Mirrors the
+     * MLB precedent ({@code MlbWinProbabilityServiceImpl.computeAndPersist} runs unconditionally
+     * before any market-match or Signal check) — weather never had the equivalent.
      */
     public Optional<Signal> evaluate(Market market, EnsembleForecast forecast) {
-        Optional<SignalConfig> config = preCheck(market);
-        if (config.isEmpty()) {
+        if (signalRepository.existsByMarketIdAndStatusIn(market.getId(), OPEN_SIGNAL_STATUSES)) {
+            log.debug("Skipping {}: already has an active or acted-on signal", market.getId());
             return Optional.empty();
         }
+
+        Optional<SignalConfig> configOpt = signalConfigRepository.findAll().stream().findFirst();
+        if (configOpt.isEmpty()) {
+            log.warn("No SignalConfig found — cannot evaluate {}", market.getId());
+            return Optional.empty();
+        }
+        SignalConfig config = configOpt.get();
 
         BigDecimal modelProbability = signalProvider.computeProbability(market, forecast);
         int ensembleMemberCount = forecast.getMemberValuesF() != null ? forecast.getMemberValuesF().length : 0;
 
-        return buildSignal(market, modelProbability, ensembleMemberCount, config.get()).map(signal -> {
+        Optional<EdgeMath> edgeMathOpt = computeEdgeMath(market, modelProbability);
+        if (edgeMathOpt.isEmpty()) {
+            return Optional.empty(); // model and market agree exactly — no edge either direction, nothing to record
+        }
+        EdgeMath edgeMath = edgeMathOpt.get();
+        boolean fillable = hasFillableQuote(market);
+
+        MarketSnapshot snapshot = newSnapshot(market, forecast, modelProbability, edgeMath, fillable);
+
+        Optional<Signal> result = Optional.empty();
+        if (fillable
+                && !SignalEligibility.isExcludedByStrikeType(config, market.getStrikeType())
+                && SignalEligibility.meetsConfidenceFloor(config, edgeMath.direction(), modelProbability)
+                && SignalEligibility.clearsThreshold(config, edgeMath.edgePercent(), edgeMath.netEdgePercent(), modelProbability, ensembleMemberCount)) {
+            Signal signal = newSignal(market, modelProbability, edgeMath, config);
             signal.setForecastId(forecast.getId());
             Signal saved = signalRepository.save(signal);
             logSignal(saved);
-            return saved;
-        });
+            snapshot.setResultedInSignalId(saved.getId());
+            result = Optional.of(saved);
+        }
+
+        marketSnapshotRepository.save(snapshot);
+        return result;
     }
 
     /**
@@ -136,16 +168,7 @@ public class SignalGenerationService {
             return config;
         }
 
-        // Guardrail: BETWEEN markets (narrow, fixed-width temperature bins, e.g. "82-83F") are
-        // a persistent structural loser, unlike GREATER/LESS (open-ended tail bins) — full trade
-        // history through 2026-09-08: BETWEEN -$22.30 over 466 trades (-4.8c/trade avg), GREATER
-        // +$1.92 (65 trades), LESS +$1.65 post-guardrail. Consistent across all 7 cities, not a
-        // location- or time-window-specific fluke. Likely mechanism: a narrow bin's empirical-CDF
-        // probability is far more sensitive to ensemble sampling noise than a wide tail's
-        // cumulative probability, given ~119-122 members. Doesn't touch GREATER/LESS or non-weather
-        // sources (MLB markets have no strikeType). Reversible via config, not a model change.
-        if (Boolean.TRUE.equals(config.get().getExcludeBetweenStrikeType())
-                && market.getStrikeType() == StrikeType.BETWEEN) {
+        if (SignalEligibility.isExcludedByStrikeType(config.get(), market.getStrikeType())) {
             log.debug("Skipping {}: BETWEEN strike type excluded by config", market.getId());
             return Optional.empty();
         }
@@ -155,93 +178,97 @@ public class SignalGenerationService {
 
     /** Edge/fee math and thresholding once pre-checks have passed. Returns an unsaved Signal. */
     private Optional<Signal> buildSignal(Market market, BigDecimal modelProbability, int ensembleMemberCount, SignalConfig config) {
+        Optional<EdgeMath> edgeMathOpt = computeEdgeMath(market, modelProbability);
+        if (edgeMathOpt.isEmpty()) {
+            return Optional.empty();
+        }
+        EdgeMath edgeMath = edgeMathOpt.get();
+
+        if (!SignalEligibility.meetsConfidenceFloor(config, edgeMath.direction(), modelProbability)) {
+            return Optional.empty();
+        }
+        if (!SignalEligibility.clearsThreshold(config, edgeMath.edgePercent(), edgeMath.netEdgePercent(), modelProbability, ensembleMemberCount)) {
+            return Optional.empty();
+        }
+
+        return Optional.of(newSignal(market, modelProbability, edgeMath, config));
+    }
+
+    /** Direction/edge/fee math shared by the weather (always-compute) and generic
+     * (gate-then-compute) evaluation paths. Empty iff model and market agree exactly — no
+     * edge either direction, and no meaningful direction to report. */
+    private Optional<EdgeMath> computeEdgeMath(Market market, BigDecimal modelProbability) {
         BigDecimal marketImpliedProbability = midpoint(market.getYesBid(), market.getYesAsk());
 
         BigDecimal diff = modelProbability.subtract(marketImpliedProbability);
         if (diff.compareTo(BigDecimal.ZERO) == 0) {
-            return Optional.empty(); // model and market agree exactly — no edge either direction
+            return Optional.empty();
         }
 
         SignalDirection direction = diff.compareTo(BigDecimal.ZERO) > 0 ? SignalDirection.BUY_YES : SignalDirection.BUY_NO;
-
-        // Guardrail: don't fade the model's own best guess. Weather trades where the model's
-        // stated probability for the side actually taken was under 50% ("long-shot" value bets,
-        // e.g. buying YES at 15% because the market was pricing it even cheaper) went 0-for-45
-        // across 28 independent city-days (2026-08-15 through 2026-08-26) — see calibration
-        // investigation. Twelve calendar days isn't enough regime diversity to trust a
-        // recalibrated probability curve yet, so this is a blunt, reversible floor rather than
-        // a model change: only take signals the model itself thinks are more likely than not.
-        BigDecimal sideConfidence = direction == SignalDirection.BUY_YES
-                ? modelProbability
-                : BigDecimal.ONE.subtract(modelProbability);
-        if (config.getMinModelConfidencePercent() != null
-                && sideConfidence.multiply(BigDecimal.valueOf(100)).compareTo(config.getMinModelConfidencePercent()) < 0) {
-            return Optional.empty();
-        }
-
         BigDecimal edgePercent = diff.abs().multiply(BigDecimal.valueOf(100)).setScale(PERCENT_SCALE, RoundingMode.HALF_UP);
 
         BigDecimal fillPrice = direction == SignalDirection.BUY_YES ? market.getYesAsk() : market.getNoAsk();
+        BigDecimal netEdgePercent = computeNetEdgePercent(edgePercent, fillPrice);
+
+        return Optional.of(new EdgeMath(direction, marketImpliedProbability, edgePercent, netEdgePercent));
+    }
+
+    /** Exposed so backtest replay can recompute net edge from a stored {@code edgePercent} and
+     * the paper trade's {@code entryPrice} (the exact same fill-price expression used here)
+     * under the current fee formula, rather than trusting a possibly stale stored value —
+     * see commit 1883388's fee/edge unit-mismatch fix for why the stored value can't always
+     * be trusted as-is for signals created before that fix. */
+    public static BigDecimal computeNetEdgePercent(BigDecimal edgePercent, BigDecimal fillPrice) {
         BigDecimal feePercent = FEE_RATE_PERCENT.multiply(fillPrice).multiply(BigDecimal.ONE.subtract(fillPrice))
                 .setScale(PERCENT_SCALE, RoundingMode.HALF_UP);
-        BigDecimal netEdgePercent = edgePercent.subtract(feePercent);
+        return edgePercent.subtract(feePercent);
+    }
 
-        if (!clearsThreshold(config, edgePercent, netEdgePercent, modelProbability, ensembleMemberCount)) {
-            return Optional.empty();
-        }
-
+    private Signal newSignal(Market market, BigDecimal modelProbability, EdgeMath edgeMath, SignalConfig config) {
         Signal signal = new Signal();
         signal.setMarketId(market.getId());
         signal.setComputedAt(Instant.now());
         signal.setModelProbability(modelProbability.setScale(PROBABILITY_SCALE, RoundingMode.HALF_UP));
-        signal.setMarketImpliedProbability(marketImpliedProbability.setScale(PROBABILITY_SCALE, RoundingMode.HALF_UP));
-        signal.setEdgePercent(edgePercent);
-        signal.setNetEdgePercent(netEdgePercent);
-        signal.setDirection(direction);
+        signal.setMarketImpliedProbability(edgeMath.marketImpliedProbability().setScale(PROBABILITY_SCALE, RoundingMode.HALF_UP));
+        signal.setEdgePercent(edgeMath.edgePercent());
+        signal.setNetEdgePercent(edgeMath.netEdgePercent());
+        signal.setDirection(edgeMath.direction());
         signal.setConfigId(config.getId());
         signal.setStatus(SignalStatus.ACTIVE);
+        return signal;
+    }
 
-        return Optional.of(signal);
+    private MarketSnapshot newSnapshot(
+            Market market, EnsembleForecast forecast, BigDecimal modelProbability, EdgeMath edgeMath, boolean fillable
+    ) {
+        MarketSnapshot snapshot = new MarketSnapshot();
+        snapshot.setMarketId(market.getId());
+        snapshot.setObservedAt(Instant.now());
+        snapshot.setYesBid(market.getYesBid());
+        snapshot.setYesAsk(market.getYesAsk());
+        snapshot.setNoBid(market.getNoBid());
+        snapshot.setNoAsk(market.getNoAsk());
+        snapshot.setOpenInterest(market.getOpenInterest());
+        snapshot.setFillable(fillable);
+        snapshot.setModelProbability(modelProbability.setScale(PROBABILITY_SCALE, RoundingMode.HALF_UP));
+        snapshot.setMarketImpliedProbability(edgeMath.marketImpliedProbability().setScale(PROBABILITY_SCALE, RoundingMode.HALF_UP));
+        snapshot.setEdgePercent(edgeMath.edgePercent());
+        snapshot.setNetEdgePercent(edgeMath.netEdgePercent());
+        snapshot.setDirection(edgeMath.direction());
+        snapshot.setForecastId(forecast.getId());
+        return snapshot;
+    }
+
+    private record EdgeMath(
+            SignalDirection direction, BigDecimal marketImpliedProbability, BigDecimal edgePercent, BigDecimal netEdgePercent
+    ) {
     }
 
     private void logSignal(Signal signal) {
         log.info("Signal: {} {} edge={}% netEdge={}% (model={}, market={})",
                 signal.getDirection(), signal.getMarketId(), signal.getEdgePercent(),
                 signal.getNetEdgePercent(), signal.getModelProbability(), signal.getMarketImpliedProbability());
-    }
-
-    private boolean clearsThreshold(
-            SignalConfig config, BigDecimal edgePercent, BigDecimal netEdgePercent,
-            BigDecimal modelProbability, int ensembleMemberCount
-    ) {
-        return switch (config.getThresholdMode()) {
-            case FLAT_PERCENT -> config.getFlatThresholdPercent() != null
-                    && edgePercent.compareTo(config.getFlatThresholdPercent()) >= 0;
-            case FEE_ADJUSTED -> config.getMinNetEdgeAfterFees() != null
-                    && netEdgePercent.compareTo(config.getMinNetEdgeAfterFees()) >= 0;
-            case CONFIDENCE_ADJUSTED -> config.getMinZScore() != null
-                    && zScore(edgePercent, modelProbability, ensembleMemberCount).compareTo(config.getMinZScore()) >= 0;
-        };
-    }
-
-    /**
-     * Not specified precisely in the design doc beyond the mode's name — interpreted here as
-     * the edge (as a probability) divided by the binomial standard error of the empirical
-     * ensemble probability (sqrt(p*(1-p)/n)), i.e. "how many standard errors is the edge
-     * away from noise, given how many ensemble members we're estimating from." Zero for
-     * non-ensemble sources (n=0), which correctly never clears a positive threshold.
-     */
-    private BigDecimal zScore(BigDecimal edgePercent, BigDecimal modelProbability, int ensembleMemberCount) {
-        if (ensembleMemberCount == 0) {
-            return BigDecimal.ZERO;
-        }
-        double p = modelProbability.doubleValue();
-        double standardError = Math.sqrt(p * (1 - p) / ensembleMemberCount);
-        if (standardError == 0) {
-            return BigDecimal.valueOf(Double.MAX_VALUE); // a degenerate, unanimous ensemble is maximally confident
-        }
-        double edgeFraction = edgePercent.doubleValue() / 100.0;
-        return BigDecimal.valueOf(edgeFraction / standardError);
     }
 
     private BigDecimal midpoint(BigDecimal a, BigDecimal b) {

@@ -2,16 +2,19 @@ package com.kalshiweather.ingestion.signal;
 
 import com.kalshiweather.ingestion.domain.entity.EnsembleForecast;
 import com.kalshiweather.ingestion.domain.entity.Market;
+import com.kalshiweather.ingestion.domain.entity.MarketSnapshot;
 import com.kalshiweather.ingestion.domain.entity.Signal;
 import com.kalshiweather.ingestion.domain.entity.SignalConfig;
 import com.kalshiweather.ingestion.domain.enums.SignalDirection;
 import com.kalshiweather.ingestion.domain.enums.StrikeType;
 import com.kalshiweather.ingestion.domain.enums.ThresholdMode;
+import com.kalshiweather.ingestion.repository.MarketSnapshotRepository;
 import com.kalshiweather.ingestion.repository.SignalConfigRepository;
 import com.kalshiweather.ingestion.repository.SignalRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -39,20 +42,29 @@ class SignalGenerationServiceTest {
     private SignalConfigRepository signalConfigRepository;
     @Mock
     private SignalRepository signalRepository;
+    @Mock
+    private MarketSnapshotRepository marketSnapshotRepository;
 
     private SignalGenerationService service;
     private EnsembleForecast forecast;
 
     @BeforeEach
     void setUp() {
-        service = new SignalGenerationService(signalProvider, signalConfigRepository, signalRepository);
+        service = new SignalGenerationService(signalProvider, signalConfigRepository, signalRepository, marketSnapshotRepository);
 
         forecast = new EnsembleForecast();
         forecast.setId(UUID.randomUUID());
         forecast.setMemberValuesF(new BigDecimal[100]); // only .length is used outside CONFIDENCE_ADJUSTED math
 
-        lenient().when(signalRepository.save(any(Signal.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(signalRepository.save(any(Signal.class))).thenAnswer(invocation -> {
+            Signal signal = invocation.getArgument(0);
+            if (signal.getId() == null) {
+                signal.setId(UUID.randomUUID());
+            }
+            return signal;
+        });
         lenient().when(signalRepository.existsByMarketIdAndStatusIn(any(), any())).thenReturn(false);
+        lenient().when(marketSnapshotRepository.save(any(MarketSnapshot.class))).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     /** yesBid=0.55, yesAsk=0.60 -> implied 0.575; model=0.65 -> edge=7.5%, fee=7%*0.60*(1-0.60)=1.68%, net=5.82%. */
@@ -86,6 +98,10 @@ class SignalGenerationServiceTest {
         assertThat(signal.getNetEdgePercent()).isEqualByComparingTo("5.820");
         assertThat(signal.getForecastId()).isEqualTo(forecast.getId());
         verify(signalRepository).save(any(Signal.class));
+
+        ArgumentCaptor<MarketSnapshot> captor = ArgumentCaptor.forClass(MarketSnapshot.class);
+        verify(marketSnapshotRepository).save(captor.capture());
+        assertThat(captor.getValue().getResultedInSignalId()).isEqualTo(signal.getId());
     }
 
     @Test
@@ -98,6 +114,7 @@ class SignalGenerationServiceTest {
 
         assertThat(result).isEmpty();
         verify(signalRepository, never()).save(any());
+        verify(marketSnapshotRepository).save(any(MarketSnapshot.class)); // still observed and recorded, just not traded
     }
 
     @Test
@@ -169,15 +186,26 @@ class SignalGenerationServiceTest {
     }
 
     @Test
-    void excludeBetweenStrikeType_skipsBetweenMarketBeforeComputingModel() {
+    void excludeBetweenStrikeType_recordsSnapshotButSkipsSignal() {
+        // the model IS still computed and a MarketSnapshot IS still saved — only Signal
+        // creation is skipped. This is the whole point of the always-observe redesign: a
+        // BETWEEN market we look at but don't trade leaves a permanent trace instead of
+        // being silently overwritten by the next ingestion cycle.
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
         when(signalConfigRepository.findAll()).thenReturn(List.of(
                 config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null, null, true)));
 
         Optional<Signal> result = service.evaluate(betweenMarket(), forecast);
 
         assertThat(result).isEmpty();
-        verifyNoInteractions(signalProvider);
         verify(signalRepository, never()).save(any());
+        ArgumentCaptor<MarketSnapshot> captor = ArgumentCaptor.forClass(MarketSnapshot.class);
+        verify(marketSnapshotRepository).save(captor.capture());
+        MarketSnapshot snapshot = captor.getValue();
+        assertThat(snapshot.getMarketId()).isEqualTo("KXHIGHNY-BETWEEN-TEST");
+        assertThat(snapshot.isFillable()).isTrue();
+        assertThat(snapshot.getModelProbability()).isEqualByComparingTo("0.65000");
+        assertThat(snapshot.getResultedInSignalId()).isNull();
     }
 
     @Test
@@ -215,6 +243,7 @@ class SignalGenerationServiceTest {
 
         assertThat(result).isEmpty();
         verify(signalRepository, never()).save(any());
+        verify(marketSnapshotRepository).save(any(MarketSnapshot.class)); // still observed and recorded, just not traded
     }
 
     @Test
@@ -257,14 +286,21 @@ class SignalGenerationServiceTest {
 
     @Test
     void skipsMarketsWithNoOpenInterest() {
+        // fillability is now a recorded fact, not a hard gate before the model runs — the
+        // model IS computed and a MarketSnapshot IS saved (fillable=false), but no Signal.
         Market noPositions = marketWithSpread();
         noPositions.setOpenInterest(BigDecimal.ZERO);
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null)));
 
         Optional<Signal> result = service.evaluate(noPositions, forecast);
 
         assertThat(result).isEmpty();
-        verifyNoInteractions(signalProvider);
         verify(signalRepository, never()).save(any());
+        ArgumentCaptor<MarketSnapshot> captor = ArgumentCaptor.forClass(MarketSnapshot.class);
+        verify(marketSnapshotRepository).save(captor.capture());
+        assertThat(captor.getValue().isFillable()).isFalse();
     }
 
     @Test
@@ -272,12 +308,17 @@ class SignalGenerationServiceTest {
         Market wideSpread = marketWithSpread();
         wideSpread.setYesBid(new BigDecimal("0.30"));
         wideSpread.setYesAsk(new BigDecimal("0.60")); // 30-cent spread, well past the 10-cent trust limit
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(
+                config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null)));
 
         Optional<Signal> result = service.evaluate(wideSpread, forecast);
 
         assertThat(result).isEmpty();
-        verifyNoInteractions(signalProvider);
         verify(signalRepository, never()).save(any());
+        ArgumentCaptor<MarketSnapshot> captor = ArgumentCaptor.forClass(MarketSnapshot.class);
+        verify(marketSnapshotRepository).save(captor.capture());
+        assertThat(captor.getValue().isFillable()).isFalse();
     }
 
     @Test
@@ -289,6 +330,7 @@ class SignalGenerationServiceTest {
         assertThat(result).isEmpty();
         verifyNoInteractions(signalProvider);
         verify(signalRepository, never()).save(any());
+        verifyNoInteractions(marketSnapshotRepository); // dedup remains a full short-circuit, no observation recorded
     }
 
     @Test
@@ -313,6 +355,7 @@ class SignalGenerationServiceTest {
 
         assertThat(result).isEmpty();
         verifyNoInteractions(signalProvider);
+        verifyNoInteractions(marketSnapshotRepository); // no config remains a full short-circuit too
     }
 
     /** Generic (non-EnsembleForecast) overload — same math, different provenance/persistence path. */
