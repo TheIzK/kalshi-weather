@@ -25,7 +25,7 @@ class BacktestControllerTest {
 
     private BacktestRequest sampleRequest() {
         return new BacktestRequest(
-                ThresholdMode.FEE_ADJUSTED, null, new BigDecimal("3.000"), null, null, null,
+                ThresholdMode.FEE_ADJUSTED, null, new BigDecimal("3.000"), null, null, null, null,
                 Instant.parse("2026-08-15T00:00:00Z"), Instant.parse("2026-08-25T00:00:00Z"), Instant.parse("2026-09-01T00:00:00Z"));
     }
 

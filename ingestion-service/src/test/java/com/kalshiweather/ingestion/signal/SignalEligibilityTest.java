@@ -32,6 +32,12 @@ class SignalEligibilityTest {
         return config;
     }
 
+    private SignalConfig withExcludeLessBuyYes(Boolean excludeLessBuyYes) {
+        SignalConfig config = config(ThresholdMode.FLAT_PERCENT, null, null, null, null, null);
+        config.setExcludeLessBuyYes(excludeLessBuyYes);
+        return config;
+    }
+
     @Test
     void isExcludedByStrikeType_excludesBetweenWhenFlagTrue() {
         SignalConfig config = config(ThresholdMode.FLAT_PERCENT, null, null, null, null, true);
@@ -52,6 +58,34 @@ class SignalEligibilityTest {
         assertThat(SignalEligibility.isExcludedByStrikeType(config, StrikeType.GREATER)).isFalse();
         assertThat(SignalEligibility.isExcludedByStrikeType(config, StrikeType.LESS)).isFalse();
         assertThat(SignalEligibility.isExcludedByStrikeType(config, null)).isFalse();
+    }
+
+    @Test
+    void isExcludedByLessBuyYes_excludesLessStrikeBuyYesWhenFlagTrue() {
+        SignalConfig config = withExcludeLessBuyYes(true);
+        assertThat(SignalEligibility.isExcludedByLessBuyYes(config, StrikeType.LESS, SignalDirection.BUY_YES)).isTrue();
+    }
+
+    @Test
+    void isExcludedByLessBuyYes_doesNotExcludeLessStrikeBuyNo() {
+        SignalConfig config = withExcludeLessBuyYes(true);
+        assertThat(SignalEligibility.isExcludedByLessBuyYes(config, StrikeType.LESS, SignalDirection.BUY_NO)).isFalse();
+    }
+
+    @Test
+    void isExcludedByLessBuyYes_doesNotExcludeGreaterOrBetweenRegardlessOfDirection() {
+        SignalConfig config = withExcludeLessBuyYes(true);
+        assertThat(SignalEligibility.isExcludedByLessBuyYes(config, StrikeType.GREATER, SignalDirection.BUY_YES)).isFalse();
+        assertThat(SignalEligibility.isExcludedByLessBuyYes(config, StrikeType.BETWEEN, SignalDirection.BUY_YES)).isFalse();
+        assertThat(SignalEligibility.isExcludedByLessBuyYes(config, null, SignalDirection.BUY_YES)).isFalse();
+    }
+
+    @Test
+    void isExcludedByLessBuyYes_doesNotExcludeWhenFlagFalseOrNull() {
+        SignalConfig falseConfig = withExcludeLessBuyYes(false);
+        SignalConfig nullConfig = withExcludeLessBuyYes(null);
+        assertThat(SignalEligibility.isExcludedByLessBuyYes(falseConfig, StrikeType.LESS, SignalDirection.BUY_YES)).isFalse();
+        assertThat(SignalEligibility.isExcludedByLessBuyYes(nullConfig, StrikeType.LESS, SignalDirection.BUY_YES)).isFalse();
     }
 
     @Test

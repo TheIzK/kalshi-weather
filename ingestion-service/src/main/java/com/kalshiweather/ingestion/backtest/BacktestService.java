@@ -6,6 +6,7 @@ import com.kalshiweather.ingestion.domain.entity.Market;
 import com.kalshiweather.ingestion.domain.entity.PaperTrade;
 import com.kalshiweather.ingestion.domain.entity.Signal;
 import com.kalshiweather.ingestion.domain.entity.SignalConfig;
+import com.kalshiweather.ingestion.domain.enums.StrikeType;
 import com.kalshiweather.ingestion.domain.enums.TradeStatus;
 import com.kalshiweather.ingestion.repository.EnsembleForecastRepository;
 import com.kalshiweather.ingestion.repository.MarketRepository;
@@ -104,6 +105,7 @@ public class BacktestService {
             Instant windowStart, Instant windowEnd
     ) {
         int excludedByStrikeType = 0;
+        int excludedByLessBuyYes = 0;
         int excludedByConfidenceFloor = 0;
         int excludedByThreshold = 0;
         int excludedMissingTrade = 0;
@@ -111,8 +113,13 @@ public class BacktestService {
 
         for (Signal signal : signals) {
             Market market = marketsById.get(signal.getMarketId());
-            if (SignalEligibility.isExcludedByStrikeType(candidate, market != null ? market.getStrikeType() : null)) {
+            StrikeType strikeType = market != null ? market.getStrikeType() : null;
+            if (SignalEligibility.isExcludedByStrikeType(candidate, strikeType)) {
                 excludedByStrikeType++;
+                continue;
+            }
+            if (SignalEligibility.isExcludedByLessBuyYes(candidate, strikeType, signal.getDirection())) {
+                excludedByLessBuyYes++;
                 continue;
             }
             if (!SignalEligibility.meetsConfidenceFloor(candidate, signal.getDirection(), signal.getModelProbability())) {
@@ -155,7 +162,7 @@ public class BacktestService {
 
         return new WindowStats(
                 windowStart, windowEnd, signals.size(), retainedTrades.size(),
-                excludedByStrikeType, excludedByConfidenceFloor, excludedByThreshold, excludedMissingTrade,
+                excludedByStrikeType, excludedByLessBuyYes, excludedByConfidenceFloor, excludedByThreshold, excludedMissingTrade,
                 settled.size(), openCount, winRate, totalPnl, avgPnl);
     }
 
@@ -190,6 +197,7 @@ public class BacktestService {
         config.setMinZScore(request.minZScore());
         config.setMinModelConfidencePercent(request.minModelConfidencePercent());
         config.setExcludeBetweenStrikeType(request.excludeBetweenStrikeType());
+        config.setExcludeLessBuyYes(request.excludeLessBuyYes());
         return config;
     }
 }

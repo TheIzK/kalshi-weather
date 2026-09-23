@@ -23,6 +23,7 @@ public record BacktestResponse(
             int historicalSignalCount,
             int retainedCount,
             int excludedByStrikeType,
+            int excludedByLessBuyYes,
             int excludedByConfidenceFloor,
             int excludedByThreshold,
             int excludedMissingTrade,

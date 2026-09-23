@@ -56,8 +56,14 @@ class BacktestServiceTest {
     }
 
     private BacktestRequest feeAdjustedRequest(BigDecimal minNetEdge, BigDecimal minConfidence, Boolean excludeBetween) {
+        return feeAdjustedRequest(minNetEdge, minConfidence, excludeBetween, null);
+    }
+
+    private BacktestRequest feeAdjustedRequest(
+            BigDecimal minNetEdge, BigDecimal minConfidence, Boolean excludeBetween, Boolean excludeLessBuyYes
+    ) {
         return new BacktestRequest(
-                ThresholdMode.FEE_ADJUSTED, null, minNetEdge, null, minConfidence, excludeBetween,
+                ThresholdMode.FEE_ADJUSTED, null, minNetEdge, null, minConfidence, excludeBetween, excludeLessBuyYes,
                 WINDOW_START, SPLIT_AT, WINDOW_END);
     }
 
@@ -232,7 +238,7 @@ class BacktestServiceTest {
     @Test
     void validation_missingModeRequiredFieldThrowsBeforeAnyRepositoryCall() {
         BacktestRequest request = new BacktestRequest(
-                ThresholdMode.FEE_ADJUSTED, null, null, null, null, null, WINDOW_START, SPLIT_AT, WINDOW_END);
+                ThresholdMode.FEE_ADJUSTED, null, null, null, null, null, null, WINDOW_START, SPLIT_AT, WINDOW_END);
 
         assertThatThrownBy(() -> service.run(request)).isInstanceOf(IllegalArgumentException.class);
         verifyNoInteractions(signalRepository, paperTradeRepository, marketRepository, ensembleForecastRepository);
@@ -241,7 +247,7 @@ class BacktestServiceTest {
     @Test
     void validation_badDateOrderingThrowsBeforeAnyRepositoryCall() {
         BacktestRequest request = new BacktestRequest(
-                ThresholdMode.FEE_ADJUSTED, null, new BigDecimal("3.000"), null, null, null,
+                ThresholdMode.FEE_ADJUSTED, null, new BigDecimal("3.000"), null, null, null, null,
                 SPLIT_AT, WINDOW_START, WINDOW_END); // windowStart after splitAt
 
         assertThatThrownBy(() -> service.run(request)).isInstanceOf(IllegalArgumentException.class);
@@ -268,11 +274,56 @@ class BacktestServiceTest {
 
         // edge=7.5%=0.075, p=0.65, n=100 -> z=1.57, clears a 1.0 threshold
         BacktestRequest request = new BacktestRequest(
-                ThresholdMode.CONFIDENCE_ADJUSTED, null, null, new BigDecimal("1.0"), null, null,
+                ThresholdMode.CONFIDENCE_ADJUSTED, null, null, new BigDecimal("1.0"), null, null, null,
                 WINDOW_START, SPLIT_AT, WINDOW_END);
 
         BacktestResponse response = service.run(request);
 
+        assertThat(response.train().retainedCount()).isEqualTo(1);
+    }
+
+    @Test
+    void excludeLessBuyYes_excludesLessStrikeBuyYesButNotOtherCombinations() {
+        Instant at = WINDOW_START.plusSeconds(10);
+        UUID idExcluded = UUID.randomUUID();
+        UUID idLessBuyNo = UUID.randomUUID();
+        UUID idGreaterBuyYes = UUID.randomUUID();
+
+        Signal lessBuyYes = signal(idExcluded, "MKT-LESS", at, SignalDirection.BUY_YES,
+                new BigDecimal("0.65"), new BigDecimal("7.500"), new BigDecimal("5.820"));
+        Signal lessBuyNo = signal(idLessBuyNo, "MKT-LESS", at, SignalDirection.BUY_NO,
+                new BigDecimal("0.35"), new BigDecimal("7.500"), new BigDecimal("5.820"));
+        Signal greaterBuyYes = signal(idGreaterBuyYes, "MKT-GREATER", at, SignalDirection.BUY_YES,
+                new BigDecimal("0.65"), new BigDecimal("7.500"), new BigDecimal("5.820"));
+
+        when(signalRepository.findByComputedAtBetween(WINDOW_START, WINDOW_END))
+                .thenReturn(List.of(lessBuyYes, lessBuyNo, greaterBuyYes));
+        when(marketRepository.findAllById(any())).thenReturn(List.of(
+                market("MKT-LESS", StrikeType.LESS), market("MKT-GREATER", StrikeType.GREATER)));
+        when(paperTradeRepository.findBySignalIdIn(any())).thenReturn(List.of(
+                trade(idLessBuyNo, new BigDecimal("0.60"), TradeStatus.CLOSED, new BigDecimal("0.42")),
+                trade(idGreaterBuyYes, new BigDecimal("0.60"), TradeStatus.CLOSED, new BigDecimal("0.42"))));
+
+        BacktestResponse response = service.run(feeAdjustedRequest(new BigDecimal("3.000"), null, null, true));
+
+        assertThat(response.train().excludedByLessBuyYes()).isEqualTo(1);
+        assertThat(response.train().retainedCount()).isEqualTo(2); // LESS+BUY_NO and GREATER+BUY_YES both survive
+    }
+
+    @Test
+    void excludeLessBuyYes_doesNotBlockWhenFlagNotConfigured() {
+        UUID id = UUID.randomUUID();
+        Signal lessBuyYes = signal(id, "MKT-LESS", WINDOW_START.plusSeconds(10), SignalDirection.BUY_YES,
+                new BigDecimal("0.65"), new BigDecimal("7.500"), new BigDecimal("5.820"));
+
+        when(signalRepository.findByComputedAtBetween(WINDOW_START, WINDOW_END)).thenReturn(List.of(lessBuyYes));
+        when(marketRepository.findAllById(any())).thenReturn(List.of(market("MKT-LESS", StrikeType.LESS)));
+        when(paperTradeRepository.findBySignalIdIn(any())).thenReturn(List.of(
+                trade(id, new BigDecimal("0.60"), TradeStatus.CLOSED, new BigDecimal("0.42"))));
+
+        BacktestResponse response = service.run(feeAdjustedRequest(new BigDecimal("3.000"), null, null, null));
+
+        assertThat(response.train().excludedByLessBuyYes()).isZero();
         assertThat(response.train().retainedCount()).isEqualTo(1);
     }
 }

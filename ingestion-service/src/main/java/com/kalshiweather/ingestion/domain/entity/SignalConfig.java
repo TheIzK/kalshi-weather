@@ -47,6 +47,13 @@ public class SignalConfig {
     @Column(name = "exclude_between_strike_type")
     private Boolean excludeBetweenStrikeType;
 
+    /** When true, skip LESS-strike markets where the model favors BUY_YES (betting on an
+     * unusually cold day) — see SignalEligibility.isExcludedByLessBuyYes's doc comment for why.
+     * Null/false means no exclusion; doesn't affect BUY_NO on LESS, GREATER either direction,
+     * or non-weather sources (no strikeType). */
+    @Column(name = "exclude_less_buy_yes")
+    private Boolean excludeLessBuyYes;
+
     public UUID getId() {
         return id;
     }
@@ -101,5 +108,13 @@ public class SignalConfig {
 
     public void setExcludeBetweenStrikeType(Boolean excludeBetweenStrikeType) {
         this.excludeBetweenStrikeType = excludeBetweenStrikeType;
+    }
+
+    public Boolean getExcludeLessBuyYes() {
+        return excludeLessBuyYes;
+    }
+
+    public void setExcludeLessBuyYes(Boolean excludeLessBuyYes) {
+        this.excludeLessBuyYes = excludeLessBuyYes;
     }
 }

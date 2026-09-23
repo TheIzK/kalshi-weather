@@ -28,6 +28,24 @@ public final class SignalEligibility {
         return Boolean.TRUE.equals(config.getExcludeBetweenStrikeType()) && strikeType == StrikeType.BETWEEN;
     }
 
+    /** Guardrail: LESS-strike markets where the model favors BUY_YES ("it'll be unusually
+     * cold") have been a consistent, near-total loser in the post-BETWEEN-exclusion era
+     * (2026-09-12 onward): -$2.35 over 25 trades (8.0% win rate), spanning all 7 cities across
+     * 9 distinct days, while every other strike-type/direction combination in the same window
+     * is net positive. Not a code or normal-fit-fallback artifact — confirmed the model
+     * probability matches the raw empirical member count exactly in every case, including one
+     * where all 119/119 ensemble members predicted cold and the market still settled warm.
+     * Losing at every confidence level, up to near-unanimous ensemble agreement, looks like a
+     * systematic cold-side bias rather than noise, though 9 days could still reflect one shared
+     * weather regime rather than a durable pattern — reversible via config, not a model change,
+     * while more data accumulates. Doesn't affect BUY_NO on LESS, GREATER either direction, or
+     * non-weather sources (no strikeType). */
+    public static boolean isExcludedByLessBuyYes(SignalConfig config, StrikeType strikeType, SignalDirection direction) {
+        return Boolean.TRUE.equals(config.getExcludeLessBuyYes())
+                && strikeType == StrikeType.LESS
+                && direction == SignalDirection.BUY_YES;
+    }
+
     /** Guardrail: don't fade the model's own best guess. Weather trades where the model's
      * stated probability for the side actually taken was under 50% ("long-shot" value bets,
      * e.g. buying YES at 15% because the market was pricing it even cheaper) went 0-for-45
