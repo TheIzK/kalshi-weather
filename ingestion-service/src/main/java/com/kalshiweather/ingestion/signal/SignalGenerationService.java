@@ -26,10 +26,11 @@ import java.util.Optional;
  * fillable price), never {@code last_price}, per the design doc: several real markets had
  * last_price far from a fillable quote on thin books.
  *
- * Fillability is gated on real activity (open interest) and spread width, not Kalshi's
- * {@code liquidity_dollars} field — verified against live data on 2026-08-11 that field
- * reads exactly 0.0000 on every KXHIGHNY market regardless of actual trading activity
- * (markets with $11k+ 24h volume and 1-cent spreads still report it as zero).
+ * Fillability is gated on real activity (open interest) and spread width — Kalshi's
+ * {@code liquidity_dollars} field was considered and rejected early on (verified against
+ * live data on 2026-08-11 that it read exactly 0.0000 on every KXHIGHNY market regardless of
+ * actual trading activity); Kalshi removed the field from the API entirely around
+ * 2026-10-01, confirming it was never worth relying on.
  *
  * Domain-agnostic by design: the core evaluation only needs a model probability, not an
  * {@link EnsembleForecast} — the weather-specific overload below computes one via

@@ -108,7 +108,6 @@ public class KalshiClient {
         market.setYesAsk(dto.yesAskDollars());
         market.setNoBid(dto.noBidDollars());
         market.setNoAsk(dto.noAskDollars());
-        market.setLiquidityDollars(dto.liquidityDollars());
         market.setVolume24h(dto.volume24h());
         market.setOpenInterest(dto.openInterest());
         return market;

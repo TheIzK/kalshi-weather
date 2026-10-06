@@ -62,10 +62,6 @@ public class Market {
     @Column(name = "no_ask", precision = 6, scale = 4, nullable = false)
     private BigDecimal noAsk;
 
-    @Column(name = "liquidity_dollars", precision = 14, scale = 4, nullable = false)
-    private BigDecimal liquidityDollars;
-
-    /** Kalshi's volume_24h_fp — unlike liquidityDollars, this is actually populated. */
     @Column(name = "volume_24h", precision = 14, scale = 4, nullable = false)
     private BigDecimal volume24h;
 
@@ -181,14 +177,6 @@ public class Market {
 
     public void setNoAsk(BigDecimal noAsk) {
         this.noAsk = noAsk;
-    }
-
-    public BigDecimal getLiquidityDollars() {
-        return liquidityDollars;
-    }
-
-    public void setLiquidityDollars(BigDecimal liquidityDollars) {
-        this.liquidityDollars = liquidityDollars;
     }
 
     public BigDecimal getVolume24h() {
