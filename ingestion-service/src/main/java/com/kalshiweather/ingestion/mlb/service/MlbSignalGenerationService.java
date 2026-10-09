@@ -12,6 +12,7 @@ import com.kalshiweather.ingestion.signal.SignalGenerationService;
 import com.kalshiweather.ingestion.trade.PaperTradeService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -53,6 +54,7 @@ public class MlbSignalGenerationService {
     private final MarketRepository marketRepository;
     private final SignalGenerationService signalGenerationService;
     private final PaperTradeService paperTradeService;
+    private final boolean tradingEnabled;
 
     public MlbSignalGenerationService(
             MlbGameRepository gameRepository,
@@ -61,7 +63,8 @@ public class MlbSignalGenerationService {
             KalshiClient kalshiClient,
             MarketRepository marketRepository,
             SignalGenerationService signalGenerationService,
-            PaperTradeService paperTradeService
+            PaperTradeService paperTradeService,
+            @Value("${mlb.trading.enabled:true}") boolean tradingEnabled
     ) {
         this.gameRepository = gameRepository;
         this.teamRepository = teamRepository;
@@ -70,6 +73,7 @@ public class MlbSignalGenerationService {
         this.marketRepository = marketRepository;
         this.signalGenerationService = signalGenerationService;
         this.paperTradeService = paperTradeService;
+        this.tradingEnabled = tradingEnabled;
     }
 
     /** Evaluates every one of today's games that has a confirmed starter on both sides. */
@@ -108,6 +112,20 @@ public class MlbSignalGenerationService {
             return;
         }
         MlbWinProbabilitySnapshot snapshot = snapshotOpt.get();
+
+        // Trading paused for the 2026 postseason (mlb.trading.enabled=false on the droplet):
+        // the FIP-based win-probability model was calibrated entirely on regular-season
+        // pitcher/bullpen usage patterns, which don't hold in October — shortened rotations,
+        // heavier bullpen usage, "openers," and off-script roster construction all break the
+        // model's assumptions. The snapshot above still persists unconditionally regardless of
+        // this flag, so the model's postseason predictions remain available to review later
+        // (e.g. to check whether they diverged from the market the same way regular-season
+        // predictions did) without risking any capital on an unvalidated regime. Revert to
+        // true once the regular season resumes.
+        if (!tradingEnabled) {
+            log.debug("Skipping game {}: MLB trading disabled (mlb.trading.enabled=false)", game.getGamePk());
+            return;
+        }
 
         BigDecimal homeWinProbability = snapshot.getHomeWinProbability();
         boolean favorsHome = homeWinProbability.compareTo(HALF) >= 0;

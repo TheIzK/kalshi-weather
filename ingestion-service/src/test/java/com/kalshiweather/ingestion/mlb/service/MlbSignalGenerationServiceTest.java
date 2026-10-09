@@ -56,7 +56,7 @@ class MlbSignalGenerationServiceTest {
     void setUp() {
         service = new MlbSignalGenerationService(
                 gameRepository, teamRepository, winProbabilityService, kalshiClient,
-                marketRepository, signalGenerationService, paperTradeService);
+                marketRepository, signalGenerationService, paperTradeService, true);
 
         // mirrors real saveAll() behavior closely enough for these tests: echoes back
         // whatever list was fetched, so downstream matching still finds the same markets.
@@ -168,6 +168,25 @@ class MlbSignalGenerationServiceTest {
 
         service.evaluateTodaysGames();
 
+        verifyNoInteractions(signalGenerationService, paperTradeService);
+    }
+
+    @Test
+    void stillPersistsSnapshotButSkipsSignalWhenTradingDisabled() {
+        // the audit trail (MlbWinProbabilitySnapshot, via computeAndPersist) must keep
+        // flowing even while trading is paused (e.g. postseason) -- only the final
+        // trade-opening step should be gated.
+        MlbSignalGenerationService pausedService = new MlbSignalGenerationService(
+                gameRepository, teamRepository, winProbabilityService, kalshiClient,
+                marketRepository, signalGenerationService, paperTradeService, false);
+
+        when(gameRepository.findGamesWithConfirmedPitchers(any())).thenReturn(List.of(game()));
+        when(winProbabilityService.computeAndPersist(any())).thenReturn(Optional.of(snapshot("0.65")));
+        when(kalshiClient.fetchOpenMarkets("KXMLBGAME")).thenReturn(List.of());
+
+        pausedService.evaluateTodaysGames();
+
+        verify(winProbabilityService).computeAndPersist(any());
         verifyNoInteractions(signalGenerationService, paperTradeService);
     }
 

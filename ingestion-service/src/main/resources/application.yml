@@ -29,3 +29,7 @@ mlb:
     daily-refresh-cron: "0 0 7 * * *" # 7am America/New_York — schedule, pitchers, stats, standings
     initial-delay-ms: 10000
     hourly-recheck-delay-ms: 3600000 # re-checks for pitcher scratches, then re-evaluates signals
+  trading:
+    enabled: true # set false during the postseason — the model is calibrated on regular-season
+                   # pitcher/bullpen usage and doesn't hold in October; see
+                   # MlbSignalGenerationService's guardrail comment

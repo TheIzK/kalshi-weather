@@ -131,6 +131,15 @@ curl -X POST -H "X-Status-Token: $TOKEN" http://159.203.139.141:8080/internal/ml
   market — e.g. `KXMLBGAME-26AUG191420CWSCHC-CWS` / `-CHC`. Matched by team abbreviation
   (the ticker suffix after the last hyphen) + occurrence date, not by parsing the rest of the
   ticker format, which is an implementation detail of Kalshi's that could change.
+- **MLB trading pause, postseason**: `MLB_TRADING_ENABLED` env var (→ `mlb.trading.enabled`,
+  default `true`) gates only the final trade-opening step in
+  `MlbSignalGenerationService.evaluateGame` — set to `false` on the droplet for the 2026
+  postseason (2026-10-09 onward), since the FIP-based win-probability model was calibrated on
+  regular-season pitcher/bullpen usage, which doesn't hold in October (shortened rotations,
+  heavier bullpen usage, "openers"). Schedule/standings/pitcher-stats refresh and the
+  `MlbWinProbabilitySnapshot` audit trail both keep running unconditionally regardless of this
+  flag — only new paper trades stop — so postseason predictions stay available to review later.
+  Revert to `true` (or unset) once the regular season resumes.
 
 ## Future considerations (not built, intentionally deferred)
 
