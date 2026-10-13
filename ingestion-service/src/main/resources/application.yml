@@ -24,6 +24,11 @@ ingestion:
     fixed-delay-ms: 900000 # 15 minutes
     settlement-check-delay-ms: 3600000 # 1 hour — settlement doesn't need 15-min granularity
 
+actuals:
+  schedule:
+    initial-delay-ms: 30000
+    fixed-delay-ms: 86400000 # once daily — settlement history doesn't change intraday
+
 mlb:
   schedule:
     daily-refresh-cron: "0 0 7 * * *" # 7am America/New_York — schedule, pitchers, stats, standings

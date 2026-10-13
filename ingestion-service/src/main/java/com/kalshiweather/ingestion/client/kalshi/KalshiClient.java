@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -72,6 +73,41 @@ public class KalshiClient {
         return response.markets().stream()
                 .map(dto -> toEntity(dto, seriesTicker))
                 .toList();
+    }
+
+    /**
+     * Fetches every settled market for a series, across as many pages as needed — used for
+     * backfilling ground-truth actual values ({@code expiration_value}), not live trading, so
+     * returns raw DTOs rather than mapped {@link Market} entities (the caller only needs
+     * {@code occurrenceDatetime}/{@code expirationValue}, not the full entity shape).
+     */
+    public List<KalshiMarketDto> fetchSettledMarkets(String seriesTicker) {
+        List<KalshiMarketDto> all = new ArrayList<>();
+        String cursor = null;
+        do {
+            String currentCursor = cursor;
+            KalshiMarketsResponse response = restClient.get()
+                    .uri(uriBuilder -> {
+                        uriBuilder.path("/markets")
+                                .queryParam("series_ticker", seriesTicker)
+                                .queryParam("status", "settled")
+                                .queryParam("limit", 1000);
+                        if (currentCursor != null) {
+                            uriBuilder.queryParam("cursor", currentCursor);
+                        }
+                        return uriBuilder.build();
+                    })
+                    .retrieve()
+                    .body(KalshiMarketsResponse.class);
+
+            if (response == null || response.markets() == null) {
+                break;
+            }
+            all.addAll(response.markets());
+            cursor = (response.cursor() == null || response.cursor().isBlank()) ? null : response.cursor();
+        } while (cursor != null);
+
+        return all;
     }
 
     /**

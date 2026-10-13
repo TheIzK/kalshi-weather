@@ -1,6 +1,7 @@
 package com.kalshiweather.ingestion.client;
 
 import com.kalshiweather.ingestion.client.kalshi.KalshiClient;
+import com.kalshiweather.ingestion.client.kalshi.KalshiMarketDto;
 import com.kalshiweather.ingestion.client.nws.NwsClient;
 import com.kalshiweather.ingestion.client.openmeteo.OpenMeteoClient;
 import com.kalshiweather.ingestion.domain.entity.EnsembleForecast;
@@ -13,7 +14,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -99,6 +104,28 @@ class LiveApiSmokeTest {
         assertThat(first.getStrikeType()).isNull();
         assertThat(first.getYesBid()).isNotNull();
         assertThat(first.getYesAsk()).isNotNull();
+    }
+
+    /**
+     * Confirms the premise behind ActualObservationService: a settled weather market's
+     * expiration_value is the real observed high, parses cleanly, and is consistent across
+     * every bin settled for the same city/day (verified live 2026-10-13 before building the
+     * backfill on top of this assumption).
+     */
+    @Test
+    void kalshiClient_settledMarketsCarryAgreeingExpirationValues() {
+        List<KalshiMarketDto> settled = kalshiClient.fetchSettledMarkets("KXHIGHNY");
+
+        assertThat(settled).isNotEmpty();
+        Map<LocalDate, Set<String>> valuesByDate = settled.stream()
+                .filter(dto -> dto.occurrenceDatetime() != null && dto.expirationValue() != null && !dto.expirationValue().isBlank())
+                .collect(Collectors.groupingBy(
+                        dto -> dto.occurrenceDatetime().atZone(ZoneId.of("America/New_York")).toLocalDate(),
+                        Collectors.mapping(KalshiMarketDto::expirationValue, Collectors.toSet())));
+
+        assertThat(valuesByDate).isNotEmpty();
+        valuesByDate.forEach((date, values) ->
+                assertThat(values).as("expiration_value should agree across bins for %s", date).hasSize(1));
     }
 
     @Test

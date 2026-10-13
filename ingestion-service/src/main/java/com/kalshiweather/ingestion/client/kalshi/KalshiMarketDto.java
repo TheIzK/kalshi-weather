@@ -26,6 +26,10 @@ public record KalshiMarketDto(
         @JsonProperty("no_bid_dollars") BigDecimal noBidDollars,
         @JsonProperty("no_ask_dollars") BigDecimal noAskDollars,
         @JsonProperty("volume_24h_fp") BigDecimal volume24h,
-        @JsonProperty("open_interest_fp") BigDecimal openInterest
+        @JsonProperty("open_interest_fp") BigDecimal openInterest,
+        /** The actual settled value (e.g. observed high temp for weather markets) once
+         * resolved — blank/empty string pre-settlement, never absent, so kept as a raw
+         * String rather than BigDecimal to avoid a deserialization failure on "". */
+        @JsonProperty("expiration_value") String expirationValue
 ) {
 }
