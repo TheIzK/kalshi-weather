@@ -40,7 +40,7 @@ public class EmpiricalCdfSignalProvider implements SignalProvider {
     private BigDecimal empiricalProbability(Market market, BigDecimal[] members) {
         long favorable = 0;
         for (BigDecimal member : members) {
-            if (resolvesYes(market, member)) {
+            if (StrikeOutcome.resolvesYes(market, member)) {
                 favorable++;
             }
         }
@@ -59,7 +59,7 @@ public class EmpiricalCdfSignalProvider implements SignalProvider {
 
         if (stddev == 0) {
             // Degenerate case: every member agrees exactly — the outcome isn't really in doubt.
-            return resolvesYes(market, BigDecimal.valueOf(mean)) ? BigDecimal.ONE : BigDecimal.ZERO;
+            return StrikeOutcome.resolvesYes(market, BigDecimal.valueOf(mean)) ? BigDecimal.ONE : BigDecimal.ZERO;
         }
 
         NormalDistribution normal = new NormalDistribution(mean, stddev);
@@ -74,14 +74,5 @@ public class EmpiricalCdfSignalProvider implements SignalProvider {
         // floating-point error at the extremes.
         probability = Math.max(0, Math.min(1, probability));
         return BigDecimal.valueOf(probability).setScale(PROBABILITY_SCALE, RoundingMode.HALF_UP);
-    }
-
-    private boolean resolvesYes(Market market, BigDecimal value) {
-        return switch (market.getStrikeType()) {
-            case GREATER -> value.compareTo(market.getFloorStrike()) > 0;
-            case LESS -> value.compareTo(market.getCapStrike()) < 0;
-            case BETWEEN -> value.compareTo(market.getFloorStrike()) > 0
-                    && value.compareTo(market.getCapStrike()) <= 0;
-        };
     }
 }
