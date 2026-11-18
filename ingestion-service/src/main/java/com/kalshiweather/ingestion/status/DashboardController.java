@@ -21,6 +21,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -35,10 +36,20 @@ import java.util.stream.Stream;
 
 /**
  * Richer, token-gated read endpoint for an external dashboard (isaacmelton.dev/kalshi) —
- * open positions and full closed-trade history grouped by domain (weather vs. each sport)
- * and then by {@code series_ticker} within it, with per-series/per-domain/overall P&amp;L and
+ * open positions and closed-trade history grouped by domain (weather vs. each sport) and
+ * then by {@code series_ticker} within it, with per-series/per-domain/overall P&amp;L and
  * win-rate stats, and a last-ingested-at health signal per series. Same auth pattern as
  * {@link StatusController}, which stays as-is for its existing lightweight consumer.
+ *
+ * <p>The {@code closedTrades} list per series is windowed to the last
+ * {@link #DISPLAYED_CLOSED_TRADE_WINDOW_DAYS} days — the underlying history is never
+ * deleted (BacktestService and future calibration work both need all of it), but by
+ * 2026-11-18 the dashboard's trade-history table had grown to 1,290 closed trades shipped
+ * and rendered on every single page load, all the way back to the first trade in August.
+ * Every summary stat ({@code totalPnl}, {@code winRate}, {@code closedCount}, at every level
+ * — series, domain, and overall) is still computed over the full, unwindowed closed-trade
+ * list, so those numbers stay an honest all-time total even though the trade-by-trade list
+ * underneath them doesn't go back that far.
  *
  * <p>Domain is weather iff the series is in {@code subject_stations} (the authoritative,
  * always-populated source of truth for "is this a weather subject" — reliable even for a
@@ -55,9 +66,15 @@ import java.util.stream.Stream;
 @RequestMapping("/internal")
 public class DashboardController {
 
-    /** Generous safety cap, not a real limit — the whole system has ~45 closed trades ever
-     * as of writing, so this only guards against unbounded growth much later. */
-    private static final int MAX_CLOSED_TRADES_PER_SERIES = 500;
+    /** Window for the *displayed* closed-trade list only — full history stays in Postgres
+     * forever (needed for BacktestService and future calibration work) and every summary
+     * stat below (totalPnl, winRate, closedCount) is still computed over ALL closed trades,
+     * never just this window. Without this, the dashboard's trade-history table grew
+     * unbounded: 1,290 closed trades and climbing as of 2026-11-18, every one of them shipped
+     * and rendered on every page load back to the very first trade in August. 30 days keeps
+     * the displayed list meaningfully "current" without losing anything — nothing here is a
+     * delete, just a display-layer cutoff. */
+    private static final int DISPLAYED_CLOSED_TRADE_WINDOW_DAYS = 30;
 
     private static final String WEATHER_DOMAIN = "WEATHER";
 
@@ -215,9 +232,10 @@ public class DashboardController {
                 .sorted(Comparator.comparing(OpenPosition::openedAt).reversed())
                 .toList();
 
+        Instant displayWindowStart = Instant.now().minus(DISPLAYED_CLOSED_TRADE_WINDOW_DAYS, ChronoUnit.DAYS);
         List<ClosedTrade> closedTrades = closed.stream()
+                .filter(t -> t.getClosedAt() != null && t.getClosedAt().isAfter(displayWindowStart))
                 .sorted(Comparator.comparing(PaperTrade::getClosedAt).reversed())
-                .limit(MAX_CLOSED_TRADES_PER_SERIES)
                 .map(t -> toClosedTrade(t, signalsById.get(t.getSignalId())))
                 .toList();
 
@@ -225,7 +243,7 @@ public class DashboardController {
                 seriesTicker,
                 lastIngestedAt,
                 open.size(),
-                closed.size(),
+                closed.size(), // full history, not windowed — closedCount stays an honest all-time total
                 totalPnl(closed),
                 winRate(closed),
                 openPositions,
