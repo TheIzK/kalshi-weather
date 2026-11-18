@@ -24,6 +24,7 @@ public record BacktestResponse(
             int retainedCount,
             int excludedByStrikeType,
             int excludedByLessBuyYes,
+            int excludedByGreaterBuyYes,
             int excludedByConfidenceFloor,
             int excludedByThreshold,
             int excludedMissingTrade,

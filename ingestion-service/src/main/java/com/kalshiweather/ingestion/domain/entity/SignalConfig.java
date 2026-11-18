@@ -54,6 +54,14 @@ public class SignalConfig {
     @Column(name = "exclude_less_buy_yes")
     private Boolean excludeLessBuyYes;
 
+    /** When true, skip GREATER-strike markets where the model favors BUY_YES (betting on an
+     * unusually hot day) — the mirror-image problem to excludeLessBuyYes, see
+     * SignalEligibility.isExcludedByGreaterBuyYes's doc comment for why. Null/false means no
+     * exclusion; doesn't affect BUY_NO on GREATER, LESS either direction, or non-weather
+     * sources (no strikeType). */
+    @Column(name = "exclude_greater_buy_yes")
+    private Boolean excludeGreaterBuyYes;
+
     public UUID getId() {
         return id;
     }
@@ -116,5 +124,13 @@ public class SignalConfig {
 
     public void setExcludeLessBuyYes(Boolean excludeLessBuyYes) {
         this.excludeLessBuyYes = excludeLessBuyYes;
+    }
+
+    public Boolean getExcludeGreaterBuyYes() {
+        return excludeGreaterBuyYes;
+    }
+
+    public void setExcludeGreaterBuyYes(Boolean excludeGreaterBuyYes) {
+        this.excludeGreaterBuyYes = excludeGreaterBuyYes;
     }
 }

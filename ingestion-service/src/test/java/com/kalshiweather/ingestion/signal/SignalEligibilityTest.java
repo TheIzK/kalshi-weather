@@ -38,6 +38,12 @@ class SignalEligibilityTest {
         return config;
     }
 
+    private SignalConfig withExcludeGreaterBuyYes(Boolean excludeGreaterBuyYes) {
+        SignalConfig config = config(ThresholdMode.FLAT_PERCENT, null, null, null, null, null);
+        config.setExcludeGreaterBuyYes(excludeGreaterBuyYes);
+        return config;
+    }
+
     @Test
     void isExcludedByStrikeType_excludesBetweenWhenFlagTrue() {
         SignalConfig config = config(ThresholdMode.FLAT_PERCENT, null, null, null, null, true);
@@ -86,6 +92,34 @@ class SignalEligibilityTest {
         SignalConfig nullConfig = withExcludeLessBuyYes(null);
         assertThat(SignalEligibility.isExcludedByLessBuyYes(falseConfig, StrikeType.LESS, SignalDirection.BUY_YES)).isFalse();
         assertThat(SignalEligibility.isExcludedByLessBuyYes(nullConfig, StrikeType.LESS, SignalDirection.BUY_YES)).isFalse();
+    }
+
+    @Test
+    void isExcludedByGreaterBuyYes_excludesGreaterStrikeBuyYesWhenFlagTrue() {
+        SignalConfig config = withExcludeGreaterBuyYes(true);
+        assertThat(SignalEligibility.isExcludedByGreaterBuyYes(config, StrikeType.GREATER, SignalDirection.BUY_YES)).isTrue();
+    }
+
+    @Test
+    void isExcludedByGreaterBuyYes_doesNotExcludeGreaterStrikeBuyNo() {
+        SignalConfig config = withExcludeGreaterBuyYes(true);
+        assertThat(SignalEligibility.isExcludedByGreaterBuyYes(config, StrikeType.GREATER, SignalDirection.BUY_NO)).isFalse();
+    }
+
+    @Test
+    void isExcludedByGreaterBuyYes_doesNotExcludeLessOrBetweenRegardlessOfDirection() {
+        SignalConfig config = withExcludeGreaterBuyYes(true);
+        assertThat(SignalEligibility.isExcludedByGreaterBuyYes(config, StrikeType.LESS, SignalDirection.BUY_YES)).isFalse();
+        assertThat(SignalEligibility.isExcludedByGreaterBuyYes(config, StrikeType.BETWEEN, SignalDirection.BUY_YES)).isFalse();
+        assertThat(SignalEligibility.isExcludedByGreaterBuyYes(config, null, SignalDirection.BUY_YES)).isFalse();
+    }
+
+    @Test
+    void isExcludedByGreaterBuyYes_doesNotExcludeWhenFlagFalseOrNull() {
+        SignalConfig falseConfig = withExcludeGreaterBuyYes(false);
+        SignalConfig nullConfig = withExcludeGreaterBuyYes(null);
+        assertThat(SignalEligibility.isExcludedByGreaterBuyYes(falseConfig, StrikeType.GREATER, SignalDirection.BUY_YES)).isFalse();
+        assertThat(SignalEligibility.isExcludedByGreaterBuyYes(nullConfig, StrikeType.GREATER, SignalDirection.BUY_YES)).isFalse();
     }
 
     @Test

@@ -106,6 +106,7 @@ public class BacktestService {
     ) {
         int excludedByStrikeType = 0;
         int excludedByLessBuyYes = 0;
+        int excludedByGreaterBuyYes = 0;
         int excludedByConfidenceFloor = 0;
         int excludedByThreshold = 0;
         int excludedMissingTrade = 0;
@@ -120,6 +121,10 @@ public class BacktestService {
             }
             if (SignalEligibility.isExcludedByLessBuyYes(candidate, strikeType, signal.getDirection())) {
                 excludedByLessBuyYes++;
+                continue;
+            }
+            if (SignalEligibility.isExcludedByGreaterBuyYes(candidate, strikeType, signal.getDirection())) {
+                excludedByGreaterBuyYes++;
                 continue;
             }
             if (!SignalEligibility.meetsConfidenceFloor(candidate, signal.getDirection(), signal.getModelProbability())) {
@@ -162,7 +167,8 @@ public class BacktestService {
 
         return new WindowStats(
                 windowStart, windowEnd, signals.size(), retainedTrades.size(),
-                excludedByStrikeType, excludedByLessBuyYes, excludedByConfidenceFloor, excludedByThreshold, excludedMissingTrade,
+                excludedByStrikeType, excludedByLessBuyYes, excludedByGreaterBuyYes, excludedByConfidenceFloor,
+                excludedByThreshold, excludedMissingTrade,
                 settled.size(), openCount, winRate, totalPnl, avgPnl);
     }
 
@@ -198,6 +204,7 @@ public class BacktestService {
         config.setMinModelConfidencePercent(request.minModelConfidencePercent());
         config.setExcludeBetweenStrikeType(request.excludeBetweenStrikeType());
         config.setExcludeLessBuyYes(request.excludeLessBuyYes());
+        config.setExcludeGreaterBuyYes(request.excludeGreaterBuyYes());
         return config;
     }
 }

@@ -46,6 +46,24 @@ public final class SignalEligibility {
                 && direction == SignalDirection.BUY_YES;
     }
 
+    /** Guardrail: GREATER-strike markets where the model favors BUY_YES ("it'll be unusually
+     * hot") — the mirror-image problem to isExcludedByLessBuyYes, found via real Brier-score
+     * calibration (model vs market, scored against actual_observations ground truth) once that
+     * table had enough history to use, rather than the indirect win-rate-vs-market check that
+     * caught the LESS+BUY_YES case: as of 2026-11-18, GREATER+BUY_YES scores a 0.40 Brier
+     * (worse than always guessing 50%, which scores 0.25), vs. 0.035 for the market on the same
+     * trades — a ~10x gap, while the mirror GREATER+BUY_NO is only modestly behind the market
+     * (0.066 vs 0.054). Spans 6 of 7 cities and holds in both halves of the time series (win
+     * rate 12.5% then 5.1%), so not noise, though dollar impact so far is small (-$0.73 over 95
+     * trades) — likely because these are cheap, low-stake long-shot bets, same shape as
+     * LESS+BUY_YES's damage before that guardrail existed. Doesn't affect BUY_NO on GREATER,
+     * LESS either direction, or non-weather sources (no strikeType). */
+    public static boolean isExcludedByGreaterBuyYes(SignalConfig config, StrikeType strikeType, SignalDirection direction) {
+        return Boolean.TRUE.equals(config.getExcludeGreaterBuyYes())
+                && strikeType == StrikeType.GREATER
+                && direction == SignalDirection.BUY_YES;
+    }
+
     /** Guardrail: don't fade the model's own best guess. Weather trades where the model's
      * stated probability for the side actually taken was under 50% ("long-shot" value bets,
      * e.g. buying YES at 15% because the market was pricing it even cheaper) went 0-for-45

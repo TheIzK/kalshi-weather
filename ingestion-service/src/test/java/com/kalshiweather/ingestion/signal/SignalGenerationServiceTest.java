@@ -293,6 +293,55 @@ class SignalGenerationServiceTest {
     }
 
     @Test
+    void excludeGreaterBuyYes_recordsSnapshotButSkipsSignal() {
+        // marketWithSpread() is StrikeType.GREATER; model=0.65 vs implied=0.575 -> BUY_YES
+        // (betting on an unusually hot day)
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withExcludeGreaterBuyYes(true)));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isEmpty();
+        verify(signalRepository, never()).save(any());
+        ArgumentCaptor<MarketSnapshot> captor = ArgumentCaptor.forClass(MarketSnapshot.class);
+        verify(marketSnapshotRepository).save(captor.capture());
+        assertThat(captor.getValue().getResultedInSignalId()).isNull();
+    }
+
+    @Test
+    void excludeGreaterBuyYes_doesNotAffectGreaterBuyNo() {
+        // model=0.40 vs implied=0.575 -> BUY_NO (model thinks it's LESS likely to be hot)
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.40"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withExcludeGreaterBuyYes(true)));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().getDirection()).isEqualTo(SignalDirection.BUY_NO);
+    }
+
+    @Test
+    void excludeGreaterBuyYes_doesNotAffectLessMarkets() {
+        // coldBetMarket() is StrikeType.LESS; model=0.65 -> BUY_YES on the cold side, unaffected
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withExcludeGreaterBuyYes(true)));
+
+        Optional<Signal> result = service.evaluate(coldBetMarket(), forecast);
+
+        assertThat(result).isPresent();
+    }
+
+    @Test
+    void excludeGreaterBuyYes_doesNotBlockWhenFlagNotConfigured() {
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withExcludeGreaterBuyYes(null)));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isPresent();
+    }
+
+    @Test
     void minModelConfidence_rejectsLongShotBuyYesBelowFloor() {
         // model=0.15 vs implied=0.03 -> BUY_YES, edge=12% (would clear a 1% flat threshold),
         // but confidence in YES is only 15% -> the guardrail should reject it regardless.
@@ -464,6 +513,12 @@ class SignalGenerationServiceTest {
     private SignalConfig withExcludeLessBuyYes(Boolean excludeLessBuyYes) {
         SignalConfig config = config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null);
         config.setExcludeLessBuyYes(excludeLessBuyYes);
+        return config;
+    }
+
+    private SignalConfig withExcludeGreaterBuyYes(Boolean excludeGreaterBuyYes) {
+        SignalConfig config = config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null);
+        config.setExcludeGreaterBuyYes(excludeGreaterBuyYes);
         return config;
     }
 

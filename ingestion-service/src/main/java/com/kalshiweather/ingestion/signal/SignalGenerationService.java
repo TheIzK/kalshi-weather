@@ -113,6 +113,7 @@ public class SignalGenerationService {
         if (fillable
                 && !SignalEligibility.isExcludedByStrikeType(config, market.getStrikeType())
                 && !SignalEligibility.isExcludedByLessBuyYes(config, market.getStrikeType(), edgeMath.direction())
+                && !SignalEligibility.isExcludedByGreaterBuyYes(config, market.getStrikeType(), edgeMath.direction())
                 && SignalEligibility.meetsConfidenceFloor(config, edgeMath.direction(), modelProbability)
                 && SignalEligibility.clearsThreshold(config, edgeMath.edgePercent(), edgeMath.netEdgePercent(), modelProbability, ensembleMemberCount)) {
             Signal signal = newSignal(market, modelProbability, edgeMath, config);
@@ -187,6 +188,9 @@ public class SignalGenerationService {
         EdgeMath edgeMath = edgeMathOpt.get();
 
         if (SignalEligibility.isExcludedByLessBuyYes(config, market.getStrikeType(), edgeMath.direction())) {
+            return Optional.empty();
+        }
+        if (SignalEligibility.isExcludedByGreaterBuyYes(config, market.getStrikeType(), edgeMath.direction())) {
             return Optional.empty();
         }
         if (!SignalEligibility.meetsConfidenceFloor(config, edgeMath.direction(), modelProbability)) {

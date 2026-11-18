@@ -20,6 +20,7 @@ public record BacktestRequest(
         BigDecimal minModelConfidencePercent,
         Boolean excludeBetweenStrikeType,
         Boolean excludeLessBuyYes,
+        Boolean excludeGreaterBuyYes,
         Instant windowStart,
         Instant splitAt,
         Instant windowEnd
