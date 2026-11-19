@@ -1,5 +1,6 @@
 package com.kalshiweather.ingestion.signal;
 
+import com.kalshiweather.ingestion.domain.entity.BucketCalibration;
 import com.kalshiweather.ingestion.domain.entity.SignalConfig;
 import com.kalshiweather.ingestion.domain.enums.SignalDirection;
 import com.kalshiweather.ingestion.domain.enums.StrikeType;
@@ -36,6 +37,21 @@ class SignalEligibilityTest {
         SignalConfig config = config(ThresholdMode.FLAT_PERCENT, null, null, null, null, null);
         config.setExcludeLessBuyYes(excludeLessBuyYes);
         return config;
+    }
+
+    private SignalConfig withRequireProvenCalibration(Boolean requireProvenCalibration, Integer minSampleSize) {
+        SignalConfig config = config(ThresholdMode.FLAT_PERCENT, null, null, null, null, null);
+        config.setRequireProvenCalibration(requireProvenCalibration);
+        config.setMinCalibrationSampleSize(minSampleSize);
+        return config;
+    }
+
+    private BucketCalibration calibration(int sampleSize, BigDecimal modelBrier, BigDecimal marketBrier) {
+        BucketCalibration calibration = new BucketCalibration();
+        calibration.setSampleSize(sampleSize);
+        calibration.setModelBrier(modelBrier);
+        calibration.setMarketBrier(marketBrier);
+        return calibration;
     }
 
     private SignalConfig withExcludeGreaterBuyYes(Boolean excludeGreaterBuyYes) {
@@ -120,6 +136,49 @@ class SignalEligibilityTest {
         SignalConfig nullConfig = withExcludeGreaterBuyYes(null);
         assertThat(SignalEligibility.isExcludedByGreaterBuyYes(falseConfig, StrikeType.GREATER, SignalDirection.BUY_YES)).isFalse();
         assertThat(SignalEligibility.isExcludedByGreaterBuyYes(nullConfig, StrikeType.GREATER, SignalDirection.BUY_YES)).isFalse();
+    }
+
+    @Test
+    void hasProvenCalibration_passesWhenGateNotEnabled() {
+        SignalConfig config = withRequireProvenCalibration(null, null);
+        assertThat(SignalEligibility.hasProvenCalibration(config, null)).isTrue();
+    }
+
+    @Test
+    void hasProvenCalibration_failsClosedWhenNoCalibrationRowExists() {
+        SignalConfig config = withRequireProvenCalibration(true, 30);
+        assertThat(SignalEligibility.hasProvenCalibration(config, null)).isFalse();
+    }
+
+    @Test
+    void hasProvenCalibration_passesWhenModelBeatsMarketWithEnoughSampleSize() {
+        SignalConfig config = withRequireProvenCalibration(true, 30);
+        BucketCalibration calibration = calibration(50, new BigDecimal("0.08"), new BigDecimal("0.10"));
+        assertThat(SignalEligibility.hasProvenCalibration(config, calibration)).isTrue();
+    }
+
+    @Test
+    void hasProvenCalibration_failsWhenMarketBeatsModel() {
+        SignalConfig config = withRequireProvenCalibration(true, 30);
+        BucketCalibration calibration = calibration(50, new BigDecimal("0.15"), new BigDecimal("0.08"));
+        assertThat(SignalEligibility.hasProvenCalibration(config, calibration)).isFalse();
+    }
+
+    @Test
+    void hasProvenCalibration_failsWhenSampleSizeBelowConfiguredMinimum() {
+        SignalConfig config = withRequireProvenCalibration(true, 30);
+        // model clearly beats market, but sample size is below the configured floor
+        BucketCalibration calibration = calibration(10, new BigDecimal("0.05"), new BigDecimal("0.20"));
+        assertThat(SignalEligibility.hasProvenCalibration(config, calibration)).isFalse();
+    }
+
+    @Test
+    void hasProvenCalibration_fallsBackToDefaultMinimumSampleSizeWhenNotConfigured() {
+        SignalConfig config = withRequireProvenCalibration(true, null);
+        BucketCalibration tooSmall = calibration(10, new BigDecimal("0.05"), new BigDecimal("0.20"));
+        BucketCalibration bigEnough = calibration(30, new BigDecimal("0.05"), new BigDecimal("0.20"));
+        assertThat(SignalEligibility.hasProvenCalibration(config, tooSmall)).isFalse();
+        assertThat(SignalEligibility.hasProvenCalibration(config, bigEnough)).isTrue();
     }
 
     @Test

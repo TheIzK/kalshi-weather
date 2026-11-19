@@ -1,5 +1,6 @@
 package com.kalshiweather.ingestion.signal;
 
+import com.kalshiweather.ingestion.domain.entity.BucketCalibration;
 import com.kalshiweather.ingestion.domain.entity.EnsembleForecast;
 import com.kalshiweather.ingestion.domain.entity.Market;
 import com.kalshiweather.ingestion.domain.entity.MarketSnapshot;
@@ -7,6 +8,7 @@ import com.kalshiweather.ingestion.domain.entity.Signal;
 import com.kalshiweather.ingestion.domain.entity.SignalConfig;
 import com.kalshiweather.ingestion.domain.enums.SignalDirection;
 import com.kalshiweather.ingestion.domain.enums.SignalStatus;
+import com.kalshiweather.ingestion.repository.BucketCalibrationRepository;
 import com.kalshiweather.ingestion.repository.MarketSnapshotRepository;
 import com.kalshiweather.ingestion.repository.SignalConfigRepository;
 import com.kalshiweather.ingestion.repository.SignalRepository;
@@ -62,17 +64,20 @@ public class SignalGenerationService {
     private final SignalConfigRepository signalConfigRepository;
     private final SignalRepository signalRepository;
     private final MarketSnapshotRepository marketSnapshotRepository;
+    private final BucketCalibrationRepository bucketCalibrationRepository;
 
     public SignalGenerationService(
             SignalProvider signalProvider,
             SignalConfigRepository signalConfigRepository,
             SignalRepository signalRepository,
-            MarketSnapshotRepository marketSnapshotRepository
+            MarketSnapshotRepository marketSnapshotRepository,
+            BucketCalibrationRepository bucketCalibrationRepository
     ) {
         this.signalProvider = signalProvider;
         this.signalConfigRepository = signalConfigRepository;
         this.signalRepository = signalRepository;
         this.marketSnapshotRepository = marketSnapshotRepository;
+        this.bucketCalibrationRepository = bucketCalibrationRepository;
     }
 
     /**
@@ -109,13 +114,18 @@ public class SignalGenerationService {
 
         MarketSnapshot snapshot = newSnapshot(market, forecast, modelProbability, edgeMath, fillable);
 
+        BucketCalibration calibration = bucketCalibrationRepository
+                .findByDomainAndStrikeTypeAndDirection(SignalDomain.WEATHER, market.getStrikeType(), edgeMath.direction())
+                .orElse(null);
+
         Optional<Signal> result = Optional.empty();
         if (fillable
                 && !SignalEligibility.isExcludedByStrikeType(config, market.getStrikeType())
                 && !SignalEligibility.isExcludedByLessBuyYes(config, market.getStrikeType(), edgeMath.direction())
                 && !SignalEligibility.isExcludedByGreaterBuyYes(config, market.getStrikeType(), edgeMath.direction())
                 && SignalEligibility.meetsConfidenceFloor(config, edgeMath.direction(), modelProbability)
-                && SignalEligibility.clearsThreshold(config, edgeMath.edgePercent(), edgeMath.netEdgePercent(), modelProbability, ensembleMemberCount)) {
+                && SignalEligibility.clearsThreshold(config, edgeMath.edgePercent(), edgeMath.netEdgePercent(), modelProbability, ensembleMemberCount)
+                && SignalEligibility.hasProvenCalibration(config, calibration)) {
             Signal signal = newSignal(market, modelProbability, edgeMath, config);
             signal.setForecastId(forecast.getId());
             Signal saved = signalRepository.save(signal);
@@ -143,7 +153,8 @@ public class SignalGenerationService {
             return Optional.empty();
         }
 
-        return buildSignal(market, modelProbability, 0, config.get()).map(signal -> {
+        String domain = SignalDomain.classifyFromSourceType(sourceType);
+        return buildSignal(market, modelProbability, 0, config.get(), domain).map(signal -> {
             signal.setSourceType(sourceType);
             signal.setSourceReferenceId(sourceReferenceId);
             Signal saved = signalRepository.save(signal);
@@ -179,8 +190,13 @@ public class SignalGenerationService {
         return config;
     }
 
-    /** Edge/fee math and thresholding once pre-checks have passed. Returns an unsaved Signal. */
-    private Optional<Signal> buildSignal(Market market, BigDecimal modelProbability, int ensembleMemberCount, SignalConfig config) {
+    /** Edge/fee math and thresholding once pre-checks have passed. Returns an unsaved Signal.
+     * {@code domain} is only needed for the calibration-bucket lookup — weather's own path
+     * never calls this method, so it's fine that MLB/future-sport callers are the only ones
+     * that need to supply it. */
+    private Optional<Signal> buildSignal(
+            Market market, BigDecimal modelProbability, int ensembleMemberCount, SignalConfig config, String domain
+    ) {
         Optional<EdgeMath> edgeMathOpt = computeEdgeMath(market, modelProbability);
         if (edgeMathOpt.isEmpty()) {
             return Optional.empty();
@@ -197,6 +213,12 @@ public class SignalGenerationService {
             return Optional.empty();
         }
         if (!SignalEligibility.clearsThreshold(config, edgeMath.edgePercent(), edgeMath.netEdgePercent(), modelProbability, ensembleMemberCount)) {
+            return Optional.empty();
+        }
+        BucketCalibration calibration = bucketCalibrationRepository
+                .findByDomainAndStrikeTypeAndDirection(domain, market.getStrikeType(), edgeMath.direction())
+                .orElse(null);
+        if (!SignalEligibility.hasProvenCalibration(config, calibration)) {
             return Optional.empty();
         }
 

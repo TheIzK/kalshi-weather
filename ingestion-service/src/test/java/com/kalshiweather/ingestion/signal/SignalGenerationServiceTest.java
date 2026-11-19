@@ -1,5 +1,6 @@
 package com.kalshiweather.ingestion.signal;
 
+import com.kalshiweather.ingestion.domain.entity.BucketCalibration;
 import com.kalshiweather.ingestion.domain.entity.EnsembleForecast;
 import com.kalshiweather.ingestion.domain.entity.Market;
 import com.kalshiweather.ingestion.domain.entity.MarketSnapshot;
@@ -8,6 +9,7 @@ import com.kalshiweather.ingestion.domain.entity.SignalConfig;
 import com.kalshiweather.ingestion.domain.enums.SignalDirection;
 import com.kalshiweather.ingestion.domain.enums.StrikeType;
 import com.kalshiweather.ingestion.domain.enums.ThresholdMode;
+import com.kalshiweather.ingestion.repository.BucketCalibrationRepository;
 import com.kalshiweather.ingestion.repository.MarketSnapshotRepository;
 import com.kalshiweather.ingestion.repository.SignalConfigRepository;
 import com.kalshiweather.ingestion.repository.SignalRepository;
@@ -44,13 +46,16 @@ class SignalGenerationServiceTest {
     private SignalRepository signalRepository;
     @Mock
     private MarketSnapshotRepository marketSnapshotRepository;
+    @Mock
+    private BucketCalibrationRepository bucketCalibrationRepository;
 
     private SignalGenerationService service;
     private EnsembleForecast forecast;
 
     @BeforeEach
     void setUp() {
-        service = new SignalGenerationService(signalProvider, signalConfigRepository, signalRepository, marketSnapshotRepository);
+        service = new SignalGenerationService(
+                signalProvider, signalConfigRepository, signalRepository, marketSnapshotRepository, bucketCalibrationRepository);
 
         forecast = new EnsembleForecast();
         forecast.setId(UUID.randomUUID());
@@ -342,6 +347,58 @@ class SignalGenerationServiceTest {
     }
 
     @Test
+    void hasProvenCalibration_recordsSnapshotButSkipsSignalWhenMarketBeatsModel() {
+        // marketWithSpread() is GREATER; model=0.65 -> BUY_YES
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withRequireProvenCalibration(true)));
+        when(bucketCalibrationRepository.findByDomainAndStrikeTypeAndDirection(
+                SignalDomain.WEATHER, StrikeType.GREATER, SignalDirection.BUY_YES))
+                .thenReturn(Optional.of(calibration(50, new BigDecimal("0.15"), new BigDecimal("0.08"))));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isEmpty();
+        verify(signalRepository, never()).save(any());
+        verify(marketSnapshotRepository).save(any(MarketSnapshot.class)); // still observed and recorded, just not traded
+    }
+
+    @Test
+    void hasProvenCalibration_createsSignalWhenModelBeatsMarketWithEnoughSampleSize() {
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withRequireProvenCalibration(true)));
+        when(bucketCalibrationRepository.findByDomainAndStrikeTypeAndDirection(
+                SignalDomain.WEATHER, StrikeType.GREATER, SignalDirection.BUY_YES))
+                .thenReturn(Optional.of(calibration(50, new BigDecimal("0.08"), new BigDecimal("0.15"))));
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isPresent();
+    }
+
+    @Test
+    void hasProvenCalibration_failsClosedWhenNoCalibrationRowExistsYet() {
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withRequireProvenCalibration(true)));
+        // bucketCalibrationRepository left unstubbed -> Optional.empty() -> no evidence yet
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isEmpty();
+        verify(signalRepository, never()).save(any());
+    }
+
+    @Test
+    void hasProvenCalibration_doesNotBlockWhenGateNotEnabled() {
+        when(signalProvider.computeProbability(any(), any())).thenReturn(new BigDecimal("0.65"));
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withRequireProvenCalibration(null)));
+        // no calibration row needed -- gate is disabled
+
+        Optional<Signal> result = service.evaluate(marketWithSpread(), forecast);
+
+        assertThat(result).isPresent();
+    }
+
+    @Test
     void minModelConfidence_rejectsLongShotBuyYesBelowFloor() {
         // model=0.15 vs implied=0.03 -> BUY_YES, edge=12% (would clear a 1% flat threshold),
         // but confidence in YES is only 15% -> the guardrail should reject it regardless.
@@ -485,6 +542,41 @@ class SignalGenerationServiceTest {
         verify(signalRepository).save(any(Signal.class));
     }
 
+    /** Same prices as marketWithSpread(), but no strikeType — matches a real MLB market,
+     * which has no strike shape (wire value "structured", mapped to null). */
+    private Market mlbShapedMarket() {
+        Market market = new Market();
+        market.setId("KXMLBGAME-TEST");
+        market.setYesBid(new BigDecimal("0.55"));
+        market.setYesAsk(new BigDecimal("0.60"));
+        market.setNoBid(new BigDecimal("0.40"));
+        market.setNoAsk(new BigDecimal("0.45"));
+        market.setOpenInterest(new BigDecimal("500"));
+        return market;
+    }
+
+    @Test
+    void genericOverload_hasProvenCalibrationUsesSourceTypeDerivedDomainAndNullStrikeType() {
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withRequireProvenCalibration(true)));
+        when(bucketCalibrationRepository.findByDomainAndStrikeTypeAndDirection("MLB", null, SignalDirection.BUY_YES))
+                .thenReturn(Optional.of(calibration(50, new BigDecimal("0.08"), new BigDecimal("0.15"))));
+
+        Optional<Signal> result = service.evaluate(mlbShapedMarket(), new BigDecimal("0.65"), "MLB_WIN_PROBABILITY", "snapshot-123");
+
+        assertThat(result).isPresent();
+    }
+
+    @Test
+    void genericOverload_hasProvenCalibrationFailsClosedWhenNoCalibrationRowExists() {
+        when(signalConfigRepository.findAll()).thenReturn(List.of(withRequireProvenCalibration(true)));
+        // bucketCalibrationRepository left unstubbed -> Optional.empty() -> no evidence yet
+
+        Optional<Signal> result = service.evaluate(mlbShapedMarket(), new BigDecimal("0.65"), "MLB_WIN_PROBABILITY", "snapshot-123");
+
+        assertThat(result).isEmpty();
+        verify(signalRepository, never()).save(any());
+    }
+
     @Test
     void genericOverload_deduplicatesAndSkipsBeforeAnyComputation() {
         when(signalRepository.existsByMarketIdAndStatusIn(any(), any())).thenReturn(true);
@@ -520,6 +612,20 @@ class SignalGenerationServiceTest {
         SignalConfig config = config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null);
         config.setExcludeGreaterBuyYes(excludeGreaterBuyYes);
         return config;
+    }
+
+    private SignalConfig withRequireProvenCalibration(Boolean requireProvenCalibration) {
+        SignalConfig config = config(ThresholdMode.FLAT_PERCENT, new BigDecimal("1.000"), null, null);
+        config.setRequireProvenCalibration(requireProvenCalibration);
+        return config;
+    }
+
+    private BucketCalibration calibration(int sampleSize, BigDecimal modelBrier, BigDecimal marketBrier) {
+        BucketCalibration calibration = new BucketCalibration();
+        calibration.setSampleSize(sampleSize);
+        calibration.setModelBrier(modelBrier);
+        calibration.setMarketBrier(marketBrier);
+        return calibration;
     }
 
     private SignalConfig config(

@@ -62,6 +62,21 @@ public class SignalConfig {
     @Column(name = "exclude_greater_buy_yes")
     private Boolean excludeGreaterBuyYes;
 
+    /** When true, a trade must fall in a (domain, strikeType, direction) bucket with a
+     * proven calibration track record (BucketCalibration.modelBrier < marketBrier, with
+     * enough sample size) to be taken at all — see
+     * SignalEligibility.hasProvenCalibration's doc comment for why this exists alongside the
+     * strike-type/confidence guardrails above rather than replacing them. Null/false means no
+     * such requirement (today's edge/confidence thresholds are the only gate, as before). */
+    @Column(name = "require_proven_calibration")
+    private Boolean requireProvenCalibration;
+
+    /** Minimum closed, ground-truthed trades a bucket needs before its calibration is trusted.
+     * Null falls back to SignalEligibility's built-in default. Only meaningful when
+     * requireProvenCalibration is true. */
+    @Column(name = "min_calibration_sample_size")
+    private Integer minCalibrationSampleSize;
+
     public UUID getId() {
         return id;
     }
@@ -132,5 +147,21 @@ public class SignalConfig {
 
     public void setExcludeGreaterBuyYes(Boolean excludeGreaterBuyYes) {
         this.excludeGreaterBuyYes = excludeGreaterBuyYes;
+    }
+
+    public Boolean getRequireProvenCalibration() {
+        return requireProvenCalibration;
+    }
+
+    public void setRequireProvenCalibration(Boolean requireProvenCalibration) {
+        this.requireProvenCalibration = requireProvenCalibration;
+    }
+
+    public Integer getMinCalibrationSampleSize() {
+        return minCalibrationSampleSize;
+    }
+
+    public void setMinCalibrationSampleSize(Integer minCalibrationSampleSize) {
+        this.minCalibrationSampleSize = minCalibrationSampleSize;
     }
 }

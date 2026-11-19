@@ -1,5 +1,6 @@
 package com.kalshiweather.ingestion.signal;
 
+import com.kalshiweather.ingestion.domain.entity.BucketCalibration;
 import com.kalshiweather.ingestion.domain.entity.SignalConfig;
 import com.kalshiweather.ingestion.domain.enums.SignalDirection;
 import com.kalshiweather.ingestion.domain.enums.StrikeType;
@@ -12,6 +13,12 @@ import java.math.BigDecimal;
  * copy. Stateless — every method is a pure function of its arguments.
  */
 public final class SignalEligibility {
+
+    /** Used only when a SignalConfig row has requireProvenCalibration enabled but no explicit
+     * minCalibrationSampleSize — roughly matches the smallest sample size this project has
+     * ever trusted a pattern at (LESS+BUY_YES was caught at n=25), rounded up for a slightly
+     * more conservative floor given how consequential this particular gate is. */
+    private static final int DEFAULT_MIN_CALIBRATION_SAMPLE_SIZE = 30;
 
     private SignalEligibility() {
     }
@@ -79,6 +86,38 @@ public final class SignalEligibility {
                 ? modelProbability
                 : BigDecimal.ONE.subtract(modelProbability);
         return sideConfidence.multiply(BigDecimal.valueOf(100)).compareTo(config.getMinModelConfidencePercent()) >= 0;
+    }
+
+    /**
+     * Whether the bucket a candidate trade would fall into (domain, strikeType, direction)
+     * has a demonstrated track record of actually beating the market on calibration, rather
+     * than merely clearing a threshold computed against our own model's self-reported
+     * probability. Added 2026-11-19 after finding that clearing the existing edge/confidence
+     * guardrails is necessary but not sufficient: the market was still better calibrated
+     * (lower Brier score) than the model on every bucket checked, in both weather and MLB,
+     * even after three rounds of strike-type/direction guardrails — including a correction to
+     * an earlier "MLB has proven edge" conclusion, which turned out to be an artifact of a
+     * cruder win-rate-vs-market check (model and market were biased in opposite directions by
+     * similar magnitudes, which that check couldn't distinguish from genuine edge).
+     *
+     * {@code calibration} is null when {@code BucketCalibrationService} hasn't recomputed a
+     * row for this exact bucket yet (brand new bucket, or recompute hasn't run) — that fails
+     * closed (no trade), matching "only trade where we have a good chance," not "trade unless
+     * proven bad." Null/false {@code requireProvenCalibration} leaves this gate disabled
+     * entirely, same semantics as every other guardrail here.
+     */
+    public static boolean hasProvenCalibration(SignalConfig config, BucketCalibration calibration) {
+        if (!Boolean.TRUE.equals(config.getRequireProvenCalibration())) {
+            return true;
+        }
+        if (calibration == null) {
+            return false;
+        }
+        int minSampleSize = config.getMinCalibrationSampleSize() != null
+                ? config.getMinCalibrationSampleSize()
+                : DEFAULT_MIN_CALIBRATION_SAMPLE_SIZE;
+        return calibration.getSampleSize() >= minSampleSize
+                && calibration.getModelBrier().compareTo(calibration.getMarketBrier()) < 0;
     }
 
     public static boolean clearsThreshold(

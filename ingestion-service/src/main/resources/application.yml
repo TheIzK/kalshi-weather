@@ -29,6 +29,11 @@ actuals:
     initial-delay-ms: 30000
     fixed-delay-ms: 86400000 # once daily — settlement history doesn't change intraday
 
+calibration:
+  schedule:
+    initial-delay-ms: 30000
+    fixed-delay-ms: 86400000 # once daily, same cadence/reasoning as actuals
+
 mlb:
   schedule:
     daily-refresh-cron: "0 0 7 * * *" # 7am America/New_York — schedule, pitchers, stats, standings
